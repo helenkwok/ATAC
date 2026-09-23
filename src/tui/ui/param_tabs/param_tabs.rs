@@ -61,7 +61,9 @@ impl App<'_> {
                 RequestParamsTabs::Headers,
                 RequestParamsTabs::Message,
                 RequestParamsTabs::Scripts
-            ]
+            ],
+            // Not rendered until the MQTT request view exists
+            Protocol::MqttRequest(_) => unreachable!()
         };
 
         let param_tabs = allowed_tabs
@@ -116,6 +118,7 @@ impl App<'_> {
                 RequestParamsTabs::Scripts => 4,
                 _ => unreachable!()
             }
+            Protocol::MqttRequest(_) => unreachable!()
         };
         
         let params_tabs = Tabs::new(param_tabs)

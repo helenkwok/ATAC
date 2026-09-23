@@ -17,8 +17,9 @@ use crate::models::auth::auth::Auth;
 use crate::models::legacy::request::RequestV0_20_2;
 use crate::models::protocol::http::http::HttpRequest;
 use crate::models::protocol::protocol::Protocol;
-use crate::models::protocol::protocol::ProtocolTypeError::{NotAWsRequest, NotAnHttpRequest};
+use crate::models::protocol::protocol::ProtocolTypeError::{NotAWsRequest, NotAnHttpRequest, NotAnMqttRequest};
 use crate::models::protocol::ws::ws::WsRequest;
+use crate::models::protocol::mqtt::mqtt::MqttRequest;
 use crate::models::response::RequestResponse;
 use crate::models::scripts::RequestScripts;
 use crate::models::settings::RequestSettings;
@@ -112,28 +113,42 @@ impl Request {
     pub fn get_http_request(&self) -> anyhow::Result<&HttpRequest> {
         match &self.protocol {
             Protocol::HttpRequest(request) => Ok(request),
-            Protocol::WsRequest(_) => Err(anyhow!(NotAnHttpRequest))
+            Protocol::WsRequest(_) | Protocol::MqttRequest(_) => Err(anyhow!(NotAnHttpRequest))
         }
     }
 
     pub fn get_http_request_mut(&mut self) -> anyhow::Result<&mut HttpRequest> {
         match &mut self.protocol {
             Protocol::HttpRequest(request) => Ok(request),
-            Protocol::WsRequest(_) => Err(anyhow!(NotAnHttpRequest))
+            Protocol::WsRequest(_) | Protocol::MqttRequest(_) => Err(anyhow!(NotAnHttpRequest))
         }
     }
 
     pub fn get_ws_request(&self) -> anyhow::Result<&WsRequest> {
         match &self.protocol {
-            Protocol::HttpRequest(_) => Err(anyhow!(NotAWsRequest)),
+            Protocol::HttpRequest(_) | Protocol::MqttRequest(_) => Err(anyhow!(NotAWsRequest)),
             Protocol::WsRequest(request) => Ok(request)
         }
     }
 
     pub fn get_ws_request_mut(&mut self) -> anyhow::Result<&mut WsRequest> {
         match &mut self.protocol {
-            Protocol::HttpRequest(_) => Err(anyhow!(NotAWsRequest)),
+            Protocol::HttpRequest(_) | Protocol::MqttRequest(_) => Err(anyhow!(NotAWsRequest)),
             Protocol::WsRequest(request) => Ok(request)
+        }
+    }
+
+    pub fn get_mqtt_request(&self) -> anyhow::Result<&MqttRequest> {
+        match &self.protocol {
+            Protocol::HttpRequest(_) | Protocol::WsRequest(_) => Err(anyhow!(NotAnMqttRequest)),
+            Protocol::MqttRequest(request) => Ok(request)
+        }
+    }
+
+    pub fn get_mqtt_request_mut(&mut self) -> anyhow::Result<&mut MqttRequest> {
+        match &mut self.protocol {
+            Protocol::HttpRequest(_) | Protocol::WsRequest(_) => Err(anyhow!(NotAnMqttRequest)),
+            Protocol::MqttRequest(request) => Ok(request)
         }
     }
 
@@ -152,6 +167,17 @@ impl Request {
                 };
 
                 Span::from("WS")
+                    .style(Modifier::BOLD)
+                    .fg(Color::White)
+                    .bg(color)
+            }
+            Protocol::MqttRequest(mqtt_request) => {
+                let color = match mqtt_request.is_connected {
+                    true => THEME.read().websocket.connection_status.connected,
+                    false => THEME.read().websocket.connection_status.disconnected,
+                };
+
+                Span::from("MQTT")
                     .style(Modifier::BOLD)
                     .fg(Color::White)
                     .bg(color)

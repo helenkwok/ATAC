@@ -23,7 +23,9 @@ impl App<'_> {
                 RequestParamsTabs::Message => RequestParamsTabs::Scripts,
                 RequestParamsTabs::Scripts => RequestParamsTabs::QueryParams,
                 _ => unreachable!()
-            }
+            },
+            // Temporary until the MQTT request view exists
+            Protocol::MqttRequest(_) => self.request_param_tab
         };
 
         self.tui_load_a_request_param_tab();
@@ -36,6 +38,7 @@ impl App<'_> {
         match selected_request.protocol {
             Protocol::HttpRequest(_) if self.request_param_tab == RequestParamsTabs::Message => self.request_param_tab = RequestParamsTabs::QueryParams,
             Protocol::WsRequest(_) if self.request_param_tab == RequestParamsTabs::Body => self.request_param_tab = RequestParamsTabs::QueryParams,
+            Protocol::MqttRequest(_) if matches!(self.request_param_tab, RequestParamsTabs::Body | RequestParamsTabs::Message) => self.request_param_tab = RequestParamsTabs::QueryParams,
             _ => {}
         };
     }

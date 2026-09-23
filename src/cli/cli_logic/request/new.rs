@@ -57,6 +57,17 @@ pub fn create_request_from_new_request_command(request_name: String, new_request
                 _ => return Err(anyhow!("Setting a body with a websocket request body is incompatible"))
             }
         }
+        Protocol::MqttRequest(_) => {
+            match new_request_command.method {
+                Method::GET => {}
+                _ => return Err(anyhow!("Setting a method with an MQTT request is incompatible"))
+            }
+
+            match body {
+                ContentType::NoBody => {}
+                _ => return Err(anyhow!("Setting a body with an MQTT request is incompatible"))
+            }
+        }
     };
 
     let mut request = Request {

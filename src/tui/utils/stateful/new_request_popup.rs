@@ -84,14 +84,14 @@ impl NewRequestPopup {
     pub fn next_protocol(&mut self) {
         self.protocol = match self.protocol {
             Protocol::HttpRequest(_) => Protocol::WsRequest(WsRequest::default()),
-            Protocol::WsRequest(_) => Protocol::HttpRequest(HttpRequest::default()),
+            Protocol::WsRequest(_) | Protocol::MqttRequest(_) => Protocol::HttpRequest(HttpRequest::default()),
         }
     }
 
     pub fn previous_protocol(&mut self) {
         self.protocol = match self.protocol {
             Protocol::HttpRequest(_) => Protocol::WsRequest(WsRequest::default()),
-            Protocol::WsRequest(_) => Protocol::HttpRequest(HttpRequest::default()),
+            Protocol::WsRequest(_) | Protocol::MqttRequest(_) => Protocol::HttpRequest(HttpRequest::default()),
         }
     }
 }

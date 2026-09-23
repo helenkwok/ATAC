@@ -435,7 +435,8 @@ impl AppState {
                             ],
                             Protocol::WsRequest(_) => vec![
                                 ModifyRequestMessageType(EventKeyBinding::new(vec![key_bindings.request_selected.param_tabs.change_message_type], "Modify message type", None)),
-                            ]
+                            ],
+                            Protocol::MqttRequest(_) => vec![]
                         };
 
                         base_param_tabs_events.extend(protocol_specific);

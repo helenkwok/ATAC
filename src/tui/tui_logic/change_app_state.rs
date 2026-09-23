@@ -341,7 +341,8 @@ impl App<'_> {
 
         self.export_request.choices = match selected_request.protocol {
             Protocol::HttpRequest(_) => ExportFormat::VARIANTS.to_vec(),
-            Protocol::WsRequest(_) => vec![ExportFormat::RustReqwest]
+            Protocol::WsRequest(_) => vec![ExportFormat::RustReqwest],
+            Protocol::MqttRequest(_) => return
         };
 
         self.set_app_state(AppState::ChoosingRequestExportFormat);

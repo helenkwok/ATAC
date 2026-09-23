@@ -5,6 +5,7 @@ use tokio::task;
 use tracing::info;
 use crate::app::app::App;
 use crate::app::business_logic::request::http::send::send_http_request;
+use crate::app::business_logic::request::send::RequestResponseError;
 use crate::app::business_logic::request::ws::send::send_ws_request;
 use crate::models::auth::auth::Auth;
 use crate::models::protocol::protocol::Protocol;
@@ -26,7 +27,7 @@ impl App<'_> {
         let mut selected_request = local_selected_request.write();
 
         match &mut selected_request.protocol {
-            Protocol::HttpRequest(_) => {}
+            Protocol::HttpRequest(_) | Protocol::MqttRequest(_) => {}
             Protocol::WsRequest(ws_request) => if ws_request.is_connected {
                 if let Some(websocket) = ws_request.websocket.clone() {
                     drop(websocket.rx);
@@ -71,7 +72,8 @@ impl App<'_> {
         task::spawn(async move {
             let response = match protocol {
                 Protocol::HttpRequest(_) => send_http_request(prepared_request, local_selected_request.clone(), &local_env).await,
-                Protocol::WsRequest(_) => send_ws_request(prepared_request, local_selected_request.clone(), &local_env, local_should_refresh_scrollbars.clone()).await
+                Protocol::WsRequest(_) => send_ws_request(prepared_request, local_selected_request.clone(), &local_env, local_should_refresh_scrollbars.clone()).await,
+                Protocol::MqttRequest(_) => Err(RequestResponseError::MqttNotSupportedYet)
             };
 
             match response {

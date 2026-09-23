@@ -18,6 +18,7 @@ use tokio::io;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::info;
 use crate::app::business_logic::request::http::send::send_http_request;
+use crate::app::business_logic::request::send::RequestResponseError;
 use crate::app::business_logic::request::ws::send::send_ws_request;
 use crate::models::protocol::protocol::Protocol;
 use crate::models::protocol::ws::message_type::MessageType;
@@ -91,6 +92,7 @@ impl App<'_> {
         let response = match protocol {
             Protocol::HttpRequest(_) => send_http_request(prepared_request, local_request.clone(), &local_env).await?,
             Protocol::WsRequest(_) => send_ws_request(prepared_request, local_request.clone(), &local_env, self.received_response.clone()).await?,
+            Protocol::MqttRequest(_) => return Err(anyhow!(RequestResponseError::MqttNotSupportedYet)),
         };
 
         let request = local_request.read();

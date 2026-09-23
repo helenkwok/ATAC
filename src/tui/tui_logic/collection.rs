@@ -124,6 +124,9 @@ impl App<'_> {
 
                 self.message_text_area.push_str(&content);
             }
+            Protocol::MqttRequest(mqtt_request) => {
+                self.message_text_area.push_str(&mqtt_request.payload.to_content());
+            }
         }
 
         let pre_request_script = match &selected_request.scripts.pre_request_script {
@@ -155,7 +158,7 @@ impl App<'_> {
                 Protocol::HttpRequest(_) => {
                     self.tui_update_body_table_selection();
                 }
-                Protocol::WsRequest(_) => {}
+                Protocol::WsRequest(_) | Protocol::MqttRequest(_) => {}
             }
 
             *self.received_response.lock() = true;

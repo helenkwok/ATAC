@@ -63,7 +63,9 @@ impl App<'_> {
                 RequestResultTabs::Cookies,
                 RequestResultTabs::Headers,
                 RequestResultTabs::Console
-            ]
+            ],
+            // Not rendered until the MQTT request view exists
+            Protocol::MqttRequest(_) => unreachable!()
         };
 
         let result_tabs: Vec<Span> = allowed_tabs
@@ -119,6 +121,7 @@ impl App<'_> {
                 RequestResultTabs::Console => 3,
                 _ => unreachable!()
             }
+            Protocol::MqttRequest(_) => unreachable!()
         };
 
         let result_tabs = Tabs::new(result_tabs)

@@ -46,6 +46,9 @@ pub enum RequestResponseError {
     CouldNotDecodeResponse,
     #[error(transparent)]
     WebsocketError(#[from] reqwest_websocket::Error),
+    // Temporary until the MQTT client is wired in
+    #[error("MQTT REQUESTS CANNOT BE SENT YET")]
+    MqttNotSupportedYet,
 }
 
 impl App<'_> {
@@ -164,7 +167,7 @@ impl App<'_> {
 
         let method = match &modified_request.protocol {
             Protocol::HttpRequest(http_request) => http_request.method.to_reqwest(),
-            Protocol::WsRequest(_) => reqwest::Method::GET,
+            Protocol::WsRequest(_) | Protocol::MqttRequest(_) => reqwest::Method::GET,
         };
 
         let mut request_builder = client.request(
