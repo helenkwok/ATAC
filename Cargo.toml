@@ -34,6 +34,9 @@ reqwest-middleware = { version = "=0.5.1", features = ["rustls", "json", "multip
 reqwest-websocket = { version = "=0.6.0", features = ["json", "middleware"] }
 reqwest_cookie_store = "=0.10.0"
 cookie_store = "=0.22.0"
+## MQTT clients, both versions ship the same "rumqttc" lib name so they have to be renamed
+rumqttc_v4 = { package = "rumqttc-v4-next", version = "=0.34.0" }
+rumqttc_v5 = { package = "rumqttc-v5-next", version = "=0.34.0" }
 
 # TUI
 ## Terminal UI framework
@@ -88,7 +91,7 @@ digest_auth = "0.3.1"
 
 # Async
 ## Handle asynchronous requests
-tokio = { version = "=1.49.0", features = ["rt", "rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio = { version = "=1.49.0", features = ["rt", "rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
 tokio-util = { version = "=0.7.18", features = ["compat"] }
 futures-util = { version = "0.3.31", features = ["sink", "alloc"] }
 ## Smaller, faster and more flexible implementation of RwLock and Mutex. Used everywhere.

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use strum::Display;
+use tokio::sync::mpsc::UnboundedSender;
 use crate::app::files::config::SKIP_SAVE_REQUESTS_RESPONSE;
 use crate::models::protocol::mqtt::payload::MqttPayload;
 use crate::models::protocol::ws::ws::Sender;
@@ -38,6 +39,10 @@ pub struct MqttRequest {
     #[serde(skip)]
     pub payload: MqttPayload,
 
+    /// Commands for the task owning the broker connection
+    #[serde(skip)]
+    pub connection: Option<UnboundedSender<MqttCommand>>,
+
     #[serde(skip)]
     pub is_connected: bool,
 }
@@ -54,6 +59,7 @@ impl Default for MqttRequest {
             publish: MqttPublish::default(),
             messages: vec![],
             payload: MqttPayload::default(),
+            connection: None,
             is_connected: false,
         }
     }
@@ -120,11 +126,38 @@ pub struct MqttPublish {
 pub struct MqttMessage {
     pub timestamp: DateTime<Local>,
     pub sender: Sender,
-    pub topic: String,
-    pub payload: MqttPayload,
-    pub qos: QoS,
-    /// Brokers set it on retained messages delivered on subscribe, not on live ones
-    pub retain: bool,
+    pub content: MqttMessageContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "content", rename_all = "lowercase")]
+pub enum MqttMessageContent {
+    Publish {
+        topic: String,
+        payload: MqttPayload,
+        qos: QoS,
+        /// Brokers set it on retained messages delivered on subscribe, not on live ones
+        retain: bool,
+    },
+    /// Connection events, e.g. subscription results or disconnections
+    Event(String),
+}
+
+impl Default for MqttMessageContent {
+    fn default() -> Self {
+        MqttMessageContent::Event(String::new())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MqttCommand {
+    Publish {
+        topic: String,
+        payload: Vec<u8>,
+        qos: QoS,
+        retain: bool,
+    },
+    Disconnect,
 }
 
 pub fn should_skip_requests_messages(_: &Vec<MqttMessage>) -> bool {

@@ -11,6 +11,7 @@ use reqwest_tracing::{DisableOtelPropagation, OtelName, TracingMiddleware};
 use thiserror::Error;
 use tracing_log::log::trace;
 use crate::app::app::App;
+use crate::app::business_logic::request::mqtt::client::PreparedMqttRequest;
 use crate::app::business_logic::request::scripts::{execute_post_request_script, execute_pre_request_script};
 use crate::app::business_logic::request::send::RequestResponseError::PostRequestScript;
 use crate::app::files::environment::save_environment_to_file;
@@ -32,6 +33,12 @@ pub enum PrepareRequestError {
     PreRequestScript,
     #[error("INVALID URL")]
     InvalidUrl,
+    #[error("MQTT URL MUST START WITH mqtt:// OR mqtts://")]
+    InvalidMqttUrlScheme,
+    #[error("MQTT ONLY SUPPORTS BASIC AUTH")]
+    UnsupportedMqttAuth,
+    #[error("MQTT CLIENT ID IS REQUIRED WHEN CLEAN SESSION IS OFF")]
+    MqttClientIdRequired,
     #[error("COULD NOT OPEN FILE")]
     CouldNotOpenFile,
     #[error("{0}")]
@@ -46,12 +53,22 @@ pub enum RequestResponseError {
     CouldNotDecodeResponse,
     #[error(transparent)]
     WebsocketError(#[from] reqwest_websocket::Error),
-    // Temporary until the MQTT client is wired in
-    #[error("MQTT REQUESTS CANNOT BE SENT YET")]
-    MqttNotSupportedYet,
+}
+
+/// MQTT doesn't go through reqwest, so it has its own prepared request
+pub enum PreparedRequest {
+    Reqwest(reqwest_middleware::RequestBuilder),
+    Mqtt(PreparedMqttRequest),
 }
 
 impl App<'_> {
+    pub async fn prepare_request_for_protocol(&self, request: &mut Request) -> Result<PreparedRequest, PrepareRequestError> {
+        match request.protocol {
+            Protocol::HttpRequest(_) | Protocol::WsRequest(_) => Ok(PreparedRequest::Reqwest(self.prepare_request(request).await?)),
+            Protocol::MqttRequest(_) => Ok(PreparedRequest::Mqtt(self.prepare_mqtt_request(request)?)),
+        }
+    }
+
     #[allow(deprecated)]
     pub async fn prepare_request(&self, request: &mut Request) -> Result<reqwest_middleware::RequestBuilder, PrepareRequestError> {
         trace!("Preparing request");

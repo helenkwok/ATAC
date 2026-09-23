@@ -18,10 +18,13 @@ use tokio::io;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::info;
 use crate::app::business_logic::request::http::send::send_http_request;
-use crate::app::business_logic::request::send::RequestResponseError;
+use crate::app::business_logic::request::mqtt::send::{mqtt_publish, send_mqtt_request};
+use crate::app::business_logic::request::send::PreparedRequest;
 use crate::app::business_logic::request::ws::send::send_ws_request;
 use crate::models::protocol::protocol::Protocol;
 use crate::models::protocol::ws::message_type::MessageType;
+use crate::models::protocol::mqtt::mqtt::MqttMessageContent;
+use crate::models::protocol::mqtt::payload::MqttPayload;
 use crate::models::protocol::ws::ws::{Message, Sender};
 
 impl App<'_> {
@@ -71,7 +74,7 @@ impl App<'_> {
             println!("{}", request.name);
         }
         
-        let prepared_request = match self.prepare_request(&mut request).await {
+        let prepared_request = match self.prepare_request_for_protocol(&mut request).await {
             Ok(prepared_request) => prepared_request,
             Err(error) => {
                 if send_command.console {
@@ -89,10 +92,11 @@ impl App<'_> {
         drop(request);
 
         let local_env = self.get_selected_env_as_local();
-        let response = match protocol {
-            Protocol::HttpRequest(_) => send_http_request(prepared_request, local_request.clone(), &local_env).await?,
-            Protocol::WsRequest(_) => send_ws_request(prepared_request, local_request.clone(), &local_env, self.received_response.clone()).await?,
-            Protocol::MqttRequest(_) => return Err(anyhow!(RequestResponseError::MqttNotSupportedYet)),
+        let response = match (&protocol, prepared_request) {
+            (Protocol::HttpRequest(_), PreparedRequest::Reqwest(prepared_request)) => send_http_request(prepared_request, local_request.clone(), &local_env).await?,
+            (Protocol::WsRequest(_), PreparedRequest::Reqwest(prepared_request)) => send_ws_request(prepared_request, local_request.clone(), &local_env, self.received_response.clone()).await?,
+            (Protocol::MqttRequest(_), PreparedRequest::Mqtt(prepared_request)) => send_mqtt_request(prepared_request, local_request.clone(), &local_env, self.received_response.clone()).await?,
+            _ => unreachable!()
         };
 
         let request = local_request.read();
@@ -242,6 +246,61 @@ impl App<'_> {
 
                     last_length = ws_request.messages.len();
                 }
+            }
+        }
+
+        if let Protocol::MqttRequest(mqtt_request) = &protocol {
+            let mut last_length = 0;
+            let publish_topic = self.replace_env_keys_by_value(&mqtt_request.publish.topic);
+            let publish_options = mqtt_request.publish.clone();
+            let local_local_request = local_request.clone();
+
+            // Each line read from stdin is published to the publish topic
+            if !publish_topic.is_empty() {
+                tokio::spawn(async move {
+                    let stdin = io::stdin();
+                    let reader = BufReader::new(stdin);
+                    let mut lines = reader.lines();
+
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let mut request = local_local_request.write();
+                        let mqtt_request = request.get_mqtt_request_mut().unwrap();
+
+                        mqtt_publish(mqtt_request, publish_topic.clone(), MqttPayload::Text(line), publish_options.qos, publish_options.retain);
+                    }
+                });
+            }
+
+            loop {
+                if let Some(request) = local_request.try_read() {
+                    let mqtt_request = request.get_mqtt_request()?;
+
+                    for message in &mqtt_request.messages[last_length..] {
+                        let timestamp = message.timestamp.format("%H:%M:%S %d/%m/%Y").to_string();
+
+                        match &message.content {
+                            MqttMessageContent::Publish { topic, payload, qos, retain } => println!(
+                                "=== {} - {} message from {} on \"{}\" ({}{}) ===\n{}",
+                                timestamp,
+                                payload.to_string(),
+                                message.sender,
+                                topic,
+                                qos,
+                                if *retain { ", retained" } else { "" },
+                                payload.to_content()
+                            ),
+                            MqttMessageContent::Event(event) => println!("=== {} - {} ===", timestamp, event)
+                        }
+                    }
+
+                    last_length = mqtt_request.messages.len();
+
+                    if !mqtt_request.is_connected {
+                        break;
+                    }
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }
 
