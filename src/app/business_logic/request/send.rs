@@ -41,6 +41,8 @@ pub enum PrepareRequestError {
     MqttClientIdRequired,
     #[error("MQTT 5 KEEP ALIVE MUST BE AT LEAST 5 SECONDS")]
     MqttKeepAliveTooShort,
+    #[error("MQTT MAX PACKET SIZE MUST BE AT LEAST 1 BYTE")]
+    MqttMaxPacketSizeZero,
     #[error("COULD NOT OPEN FILE")]
     CouldNotOpenFile,
     #[error("{0}")]

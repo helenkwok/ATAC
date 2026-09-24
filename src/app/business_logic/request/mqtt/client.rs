@@ -193,23 +193,32 @@ impl MqttEventLoop {
 /// rumqttc's default TLS configuration panics on platform certificates it can't load, so unreadable ones are skipped instead
 fn tls_configuration(accept_invalid_certs: bool, accept_invalid_hostnames: bool) -> Result<TlsConfiguration, String> {
     let provider = Arc::new(aws_lc_rs::default_provider());
-    let mut root_cert_store = RootCertStore::empty();
 
-    for cert in rustls_native_certs::load_native_certs().certs {
-        root_cert_store.add(cert).ok();
-    }
+    // Not needed when every certificate is accepted, which also works without any platform certificate
+    let verifier = match accept_invalid_certs {
+        true => None,
+        false => {
+            let mut root_cert_store = RootCertStore::empty();
 
-    let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(root_cert_store), provider.clone())
-        .build()
-        .map_err(|error| error.to_string())?;
+            for cert in rustls_native_certs::load_native_certs().certs {
+                root_cert_store.add(cert).ok();
+            }
 
-    let config = ClientConfig::builder_with_provider(provider)
+            let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(root_cert_store), provider.clone())
+                .build()
+                .map_err(|error| error.to_string())?;
+
+            Some(verifier)
+        }
+    };
+
+    let config = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(RequestSettingsVerifier {
             verifier,
-            accept_invalid_certs,
+            supported_schemes: provider.signature_verification_algorithms.supported_schemes(),
             accept_invalid_hostnames,
         }))
         .with_no_client_auth();
@@ -220,18 +229,19 @@ fn tls_configuration(accept_invalid_certs: bool, accept_invalid_hostnames: bool)
 /// Applies the request "accept invalid certs" and "accept invalid hostnames" settings on top of the usual verification
 #[derive(Debug)]
 struct RequestSettingsVerifier {
-    verifier: Arc<WebPkiServerVerifier>,
-    accept_invalid_certs: bool,
+    /// None when invalid certs are accepted
+    verifier: Option<Arc<WebPkiServerVerifier>>,
+    supported_schemes: Vec<SignatureScheme>,
     accept_invalid_hostnames: bool,
 }
 
 impl ServerCertVerifier for RequestSettingsVerifier {
     fn verify_server_cert(&self, end_entity: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], server_name: &ServerName<'_>, ocsp_response: &[u8], now: UnixTime) -> Result<ServerCertVerified, Error> {
-        if self.accept_invalid_certs {
+        let Some(verifier) = &self.verifier else {
             return Ok(ServerCertVerified::assertion());
-        }
+        };
 
-        match self.verifier.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now) {
+        match verifier.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now) {
             Err(Error::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. })) if self.accept_invalid_hostnames => Ok(ServerCertVerified::assertion()),
             result => result
         }
@@ -239,21 +249,21 @@ impl ServerCertVerifier for RequestSettingsVerifier {
 
     // Like reqwest, accepting invalid certs also skips the handshake signature checks, which reject e.g. X.509 v1 certificates
     fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
-        match self.accept_invalid_certs {
-            true => Ok(HandshakeSignatureValid::assertion()),
-            false => self.verifier.verify_tls12_signature(message, cert, dss)
+        match &self.verifier {
+            None => Ok(HandshakeSignatureValid::assertion()),
+            Some(verifier) => verifier.verify_tls12_signature(message, cert, dss)
         }
     }
 
     fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
-        match self.accept_invalid_certs {
-            true => Ok(HandshakeSignatureValid::assertion()),
-            false => self.verifier.verify_tls13_signature(message, cert, dss)
+        match &self.verifier {
+            None => Ok(HandshakeSignatureValid::assertion()),
+            Some(verifier) => verifier.verify_tls13_signature(message, cert, dss)
         }
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.verifier.supported_verify_schemes()
+        self.supported_schemes.clone()
     }
 }
 

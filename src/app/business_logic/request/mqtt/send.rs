@@ -27,7 +27,11 @@ impl App<'_> {
         /* PRE-REQUEST SCRIPT */
 
         let modified_request = self.handle_pre_request_script(request, env)?;
-        let mqtt_request = modified_request.get_mqtt_request().unwrap();
+
+        // The script could have changed the protocol
+        let Ok(mqtt_request) = modified_request.get_mqtt_request() else {
+            return Err(PrepareRequestError::PreRequestScript);
+        };
 
         /* URL */
 
@@ -74,6 +78,13 @@ impl App<'_> {
         // Same, rumqttc panics on MQTT 5 keep alives under 5 seconds
         if mqtt_request.version == MqttVersion::V5 && mqtt_request.keep_alive < 5 {
             return Err(PrepareRequestError::MqttKeepAliveTooShort);
+        }
+
+        /* MAX PACKET SIZE */
+
+        // A zero limit is a protocol error in MQTT 5 and would refuse every packet in 3.1.1
+        if mqtt_request.max_packet_size == 0 {
+            return Err(PrepareRequestError::MqttMaxPacketSizeZero);
         }
 
         /* SUBSCRIPTIONS */
@@ -196,13 +207,10 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
 
     drop(request);
 
-    for (topic, qos) in prepared_request.subscriptions {
-        if let Err(error) = client.subscribe(topic.clone(), qos).await {
-            push_event(&local_request, format!("Could not subscribe to \"{topic}\": {error}"));
-        }
-    }
-
-    tokio::spawn(connection_loop(client, event_loop, commands_receiver, local_request, received_response));
+    // rumqttc queues requests in a bounded channel that only the event loop empties,
+    // so requests are sent from their own task to never block the polling
+    tokio::spawn(events_loop(event_loop, local_request.clone(), received_response));
+    tokio::spawn(requests_loop(client, prepared_request.subscriptions, commands_receiver, local_request));
 
     Ok(modified_response)
 }
@@ -216,8 +224,13 @@ pub fn mqtt_publish(mqtt_request: &mut MqttRequest, topic: String, payload: Mqtt
 
     let payload_bytes = payload.to_bytes();
 
-    // Sending a packet over the limit would close the connection, the fixed and variable headers are at most 9 bytes
-    let packet_size = payload_bytes.len() + topic.len() + 9;
+    // Sending a packet over the limit would close the connection, the fixed and variable headers are at most 9 bytes,
+    // plus the properties length for MQTT 5
+    let headers_size = match mqtt_request.version {
+        MqttVersion::V3_1_1 => 9,
+        MqttVersion::V5 => 10,
+    };
+    let packet_size = payload_bytes.len() + topic.len() + headers_size;
     if packet_size > mqtt_request.max_packet_size as usize {
         mqtt_request.messages.push(MqttMessage {
             timestamp: Local::now(),
@@ -267,49 +280,56 @@ async fn wait_for_connack(event_loop: &mut MqttEventLoop) -> Result<(String, boo
     }
 }
 
-async fn connection_loop(client: MqttClient, mut event_loop: MqttEventLoop, mut commands_receiver: UnboundedReceiver<MqttCommand>, local_request: Arc<RwLock<Request>>, received_response: Arc<Mutex<bool>>) {
-    let mut is_disconnecting = false;
+/// Sends the subscriptions, then the publish and disconnect commands, until disconnected
+async fn requests_loop(client: MqttClient, subscriptions: Vec<(String, QoS)>, mut commands_receiver: UnboundedReceiver<MqttCommand>, local_request: Arc<RwLock<Request>>) {
+    for (topic, qos) in subscriptions {
+        if let Err(error) = client.subscribe(topic.clone(), qos).await {
+            push_event(&local_request, format!("Could not subscribe to \"{topic}\": {error}"));
+        }
+    }
 
-    let reason = loop {
-        tokio::select! {
-            command = commands_receiver.recv(), if !is_disconnecting => match command {
-                Some(MqttCommand::Publish { topic, payload, qos, retain }) => {
-                    if let Err(error) = client.publish(topic.clone(), payload, qos, retain).await {
-                        push_event(&local_request, format!("Could not publish to \"{topic}\": {error}"));
-                    }
-                },
-                Some(MqttCommand::Disconnect) | None => {
-                    is_disconnecting = true;
-
-                    if let Err(error) = client.disconnect().await {
-                        break format!("Disconnected: {error}");
-                    }
+    loop {
+        match commands_receiver.recv().await {
+            Some(MqttCommand::Publish { topic, payload, qos, retain }) => {
+                if let Err(error) = client.publish(topic.clone(), payload, qos, retain).await {
+                    push_event(&local_request, format!("Could not publish to \"{topic}\": {error}"));
                 }
             },
-            event = event_loop.poll() => match event {
-                Ok(MqttEvent::Publish { topic, payload, qos, retain }) => {
-                    let mut request = local_request.write();
-                    let mqtt_request = request.get_mqtt_request_mut().unwrap();
+            // The command sender is dropped when the connection has ended
+            Some(MqttCommand::Disconnect) | None => {
+                client.disconnect().await.ok();
+                break;
+            }
+        }
+    }
+}
 
-                    mqtt_request.messages.push(MqttMessage {
-                        timestamp: Local::now(),
-                        sender: Sender::Server,
-                        content: MqttMessageContent::Publish {
-                            topic,
-                            payload: MqttPayload::from_bytes(&payload),
-                            qos,
-                            retain,
-                        },
-                    });
-                },
-                Ok(MqttEvent::SubAck(return_codes)) => push_event(&local_request, format!("Subscription result: {return_codes}")),
-                Ok(MqttEvent::Disconnect(reason)) => break reason,
-                Ok(MqttEvent::Disconnected) => break String::from("Disconnected"),
-                Ok(MqttEvent::ConnAck { .. } | MqttEvent::Other) => continue,
-                Err(error) => {
-                    error!("MQTT connection error: {}", error);
-                    break format!("Connection closed: {error}");
-                }
+/// Polls the broker connection and logs the incoming messages until it ends
+async fn events_loop(mut event_loop: MqttEventLoop, local_request: Arc<RwLock<Request>>, received_response: Arc<Mutex<bool>>) {
+    let reason = loop {
+        match event_loop.poll().await {
+            Ok(MqttEvent::Publish { topic, payload, qos, retain }) => {
+                let mut request = local_request.write();
+                let mqtt_request = request.get_mqtt_request_mut().unwrap();
+
+                mqtt_request.messages.push(MqttMessage {
+                    timestamp: Local::now(),
+                    sender: Sender::Server,
+                    content: MqttMessageContent::Publish {
+                        topic,
+                        payload: MqttPayload::from_bytes(&payload),
+                        qos,
+                        retain,
+                    },
+                });
+            },
+            Ok(MqttEvent::SubAck(return_codes)) => push_event(&local_request, format!("Subscription result: {return_codes}")),
+            Ok(MqttEvent::Disconnect(reason)) => break reason,
+            Ok(MqttEvent::Disconnected) => break String::from("Disconnected"),
+            Ok(MqttEvent::ConnAck { .. } | MqttEvent::Other) => continue,
+            Err(error) => {
+                error!("MQTT connection error: {}", error);
+                break format!("Connection closed: {error}");
             }
         }
 
@@ -318,6 +338,7 @@ async fn connection_loop(client: MqttClient, mut event_loop: MqttEventLoop, mut 
 
     push_event(&local_request, reason);
 
+    // Dropping the command sender also ends the requests loop
     let mut request = local_request.write();
     let mqtt_request = request.get_mqtt_request_mut().unwrap();
     mqtt_request.connection = None;

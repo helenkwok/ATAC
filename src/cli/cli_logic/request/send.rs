@@ -109,8 +109,9 @@ impl App<'_> {
             println!("{}", response.duration.unwrap());
         }
 
-        if send_command.cookies {
-            println!("{}", response.cookies.unwrap());
+        // MQTT and failed requests have no cookies
+        if send_command.cookies && let Some(cookies) = &response.cookies {
+            println!("{cookies}");
         }
 
         if send_command.headers {

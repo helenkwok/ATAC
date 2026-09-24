@@ -160,7 +160,7 @@ pub struct MqttArgs {
     pub keep_alive: Option<u16>,
 
     /// MQTT max packet size (bytes)
-    #[arg(long, value_name = "BYTES", display_order = 31)]
+    #[arg(long, value_name = "BYTES", value_parser = clap::value_parser!(u32).range(1..), display_order = 31)]
     pub max_packet_size: Option<u32>,
 
     /// Add an MQTT subscription, QoS is 0, 1 or 2
