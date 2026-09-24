@@ -256,16 +256,19 @@ impl App<'_> {
             let publish_options = mqtt_request.publish.clone();
             let local_local_request = local_request.clone();
 
-            // Each line read from stdin is published to the publish topic
+            // Each line read from stdin is published to the publish topic.
+            // Read from a plain thread, the runtime would wait for a pending stdin read before exiting once disconnected
             if !publish_topic.is_empty() {
-                tokio::spawn(async move {
-                    let stdin = io::stdin();
-                    let reader = BufReader::new(stdin);
-                    let mut lines = reader.lines();
+                std::thread::spawn(move || {
+                    for line in std::io::stdin().lines() {
+                        let Ok(line) = line else {
+                            break;
+                        };
 
-                    while let Ok(Some(line)) = lines.next_line().await {
                         let mut request = local_local_request.write();
-                        let mqtt_request = request.get_mqtt_request_mut().unwrap();
+                        let Ok(mqtt_request) = request.get_mqtt_request_mut() else {
+                            break;
+                        };
 
                         mqtt_publish(mqtt_request, publish_topic.clone(), MqttPayload::Text(line), publish_options.qos, publish_options.retain);
                     }
@@ -273,32 +276,37 @@ impl App<'_> {
             }
 
             loop {
-                if let Some(request) = local_request.try_read() {
+                // Copied so that the lock is not held while printing, a slow stdout would block the connection
+                let (new_messages, is_connected) = {
+                    let request = local_request.read();
                     let mqtt_request = request.get_mqtt_request()?;
-
-                    for message in &mqtt_request.messages[last_length..] {
-                        let timestamp = message.timestamp.format("%H:%M:%S %d/%m/%Y").to_string();
-
-                        match &message.content {
-                            MqttMessageContent::Publish { topic, payload, qos, retain } => println!(
-                                "=== {} - {} message from {} on \"{}\" ({}{}) ===\n{}",
-                                timestamp,
-                                payload.to_string(),
-                                message.sender,
-                                topic,
-                                qos,
-                                if *retain { ", retained" } else { "" },
-                                payload.to_content()
-                            ),
-                            MqttMessageContent::Event(event) => println!("=== {} - {} ===", timestamp, event)
-                        }
-                    }
+                    let new_messages = mqtt_request.messages[last_length..].to_vec();
 
                     last_length = mqtt_request.messages.len();
 
-                    if !mqtt_request.is_connected {
-                        break;
+                    (new_messages, mqtt_request.is_connected)
+                };
+
+                for message in &new_messages {
+                    let timestamp = message.timestamp.format("%H:%M:%S %d/%m/%Y").to_string();
+
+                    match &message.content {
+                        MqttMessageContent::Publish { topic, payload, qos, retain } => println!(
+                            "=== {} - {} message from {} on \"{}\" ({}{}) ===\n{}",
+                            timestamp,
+                            payload.to_string(),
+                            message.sender,
+                            topic,
+                            qos,
+                            if *retain { ", retained" } else { "" },
+                            payload.to_content()
+                        ),
+                        MqttMessageContent::Event(event) => println!("=== {} - {} ===", timestamp, event)
                     }
+                }
+
+                if !is_connected {
+                    break;
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
