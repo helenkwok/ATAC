@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use clap::ValueEnum;
 use tokio_util::sync::CancellationToken;
 use crate::app::app::App;
-use crate::cli::commands::request_commands::new::{AuthArgs, BodyArgs, NewRequestCommand};
+use crate::cli::commands::request_commands::new::{AuthArgs, BodyArgs, MqttArgs, NewRequestCommand};
 use crate::models::auth::auth::Auth;
 use crate::models::auth::basic::BasicAuth;
 use crate::models::auth::bearer_token::BearerToken;
@@ -10,6 +10,7 @@ use crate::models::auth::digest::{extract_www_authenticate_digest_data, Digest};
 use crate::models::auth::jwt::{JwtAlgorithm, JwtSecretType, JwtToken};
 use crate::models::protocol::http::body::ContentType;
 use crate::models::protocol::http::method::Method;
+use crate::models::protocol::mqtt::mqtt::{MqttRequest, MqttSubscription, QoS};
 use crate::models::protocol::protocol::Protocol;
 use crate::models::request::{ConsoleOutput, KeyValue, Request, DEFAULT_HEADERS};
 use crate::models::response::RequestResponse;
@@ -34,12 +35,17 @@ pub fn create_request_from_new_request_command(request_name: String, new_request
     let headers = string_array_to_key_value_array(new_request_command.add_header);
     let body = get_content_type_from_body_args(new_request_command.body);
 
-    let base_headers = match new_request_command.no_base_headers {
+    // MQTT has no headers
+    let base_headers = match new_request_command.no_base_headers || matches!(new_request_command.protocol, Protocol::MqttRequest(_)) {
         true => vec![],
         false => DEFAULT_HEADERS.clone()
     };
 
     let mut protocol = new_request_command.protocol.clone();
+
+    if new_request_command.mqtt.is_used() && !matches!(protocol, Protocol::MqttRequest(_)) {
+        return Err(anyhow!("MQTT options can only be used with an MQTT request"));
+    }
 
     match &mut protocol {
         Protocol::HttpRequest(http_request) => {
@@ -57,7 +63,9 @@ pub fn create_request_from_new_request_command(request_name: String, new_request
                 _ => return Err(anyhow!("Setting a body with a websocket request body is incompatible"))
             }
         }
-        Protocol::MqttRequest(_) => {
+        Protocol::MqttRequest(mqtt_request) => {
+            set_mqtt_request_from_mqtt_args(mqtt_request, new_request_command.mqtt)?;
+
             match new_request_command.method {
                 Method::GET => {}
                 _ => return Err(anyhow!("Setting a method with an MQTT request is incompatible"))
@@ -66,6 +74,10 @@ pub fn create_request_from_new_request_command(request_name: String, new_request
             match body {
                 ContentType::NoBody => {}
                 _ => return Err(anyhow!("Setting a body with an MQTT request is incompatible"))
+            }
+
+            if !headers.is_empty() {
+                return Err(anyhow!("Setting a header with an MQTT request is incompatible"))
             }
         }
     };
@@ -112,6 +124,50 @@ fn string_array_to_key_value_array(string_array: Vec<String>) -> Vec<KeyValue> {
     }
 
     return key_value_array
+}
+
+fn set_mqtt_request_from_mqtt_args(mqtt_request: &mut MqttRequest, mqtt_args: MqttArgs) -> anyhow::Result<()> {
+    if let Some(version) = mqtt_args.mqtt_version {
+        mqtt_request.version = version;
+    }
+
+    if let Some(client_id) = mqtt_args.client_id {
+        mqtt_request.client_id = client_id;
+    }
+
+    mqtt_request.clean_session = !mqtt_args.no_clean_session;
+
+    if let Some(session_expiry) = mqtt_args.session_expiry {
+        mqtt_request.session_expiry_interval = session_expiry;
+    }
+
+    if let Some(keep_alive) = mqtt_args.keep_alive {
+        mqtt_request.keep_alive = keep_alive;
+    }
+
+    if let Some(max_packet_size) = mqtt_args.max_packet_size {
+        mqtt_request.max_packet_size = max_packet_size;
+    }
+
+    for subscription in mqtt_args.add_subscription.chunks(2) {
+        mqtt_request.subscriptions.push(MqttSubscription {
+            enabled: true,
+            topic: subscription[0].clone(),
+            qos: QoS::from_str(&subscription[1], true).map_err(|_| anyhow!("Invalid QoS \"{}\", expected 0, 1 or 2", subscription[1]))?,
+        });
+    }
+
+    if let Some(publish_topic) = mqtt_args.publish_topic {
+        mqtt_request.publish.topic = publish_topic;
+    }
+
+    if let Some(publish_qos) = mqtt_args.publish_qos {
+        mqtt_request.publish.qos = publish_qos;
+    }
+
+    mqtt_request.publish.retain = mqtt_args.publish_retain;
+
+    Ok(())
 }
 
 fn get_auth_from_auth_args(auth_args: AuthArgs) -> anyhow::Result<Auth> {

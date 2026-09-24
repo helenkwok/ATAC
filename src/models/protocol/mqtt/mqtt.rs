@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use strum::Display;
 use tokio::sync::mpsc::UnboundedSender;
@@ -88,29 +89,34 @@ fn default_max_packet_size() -> u32 {
     1024 * 1024
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Display, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Display, ValueEnum, Serialize, Deserialize)]
 pub enum MqttVersion {
     #[default]
     #[serde(rename = "3.1.1")]
     #[strum(to_string = "3.1.1")]
+    #[clap(name = "3.1.1")]
     V3_1_1,
 
     #[serde(rename = "5")]
     #[strum(to_string = "5")]
+    #[clap(name = "5")]
     V5,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Display, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Display, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QoS {
     #[default]
     #[strum(to_string = "QoS 0")]
+    #[clap(name = "0")]
     AtMostOnce,
 
     #[strum(to_string = "QoS 1")]
+    #[clap(name = "1")]
     AtLeastOnce,
 
     #[strum(to_string = "QoS 2")]
+    #[clap(name = "2")]
     ExactlyOnce,
 }
 

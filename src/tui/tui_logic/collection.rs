@@ -248,10 +248,16 @@ impl App<'_> {
         let selected_collection_index = self.new_request_popup.selected_collection;
         let protocol = self.new_request_popup.protocol.clone();
 
+        // MQTT has no headers
+        let headers = match protocol {
+            Protocol::MqttRequest(_) => vec![],
+            _ => DEFAULT_HEADERS.clone()
+        };
+
         let new_request = Request {
             name: new_request_name,
             protocol,
-            headers: DEFAULT_HEADERS.clone(),
+            headers,
             settings: RequestSettings::default(),
             ..Default::default()
         };
