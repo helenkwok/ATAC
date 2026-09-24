@@ -33,12 +33,14 @@ pub enum PrepareRequestError {
     PreRequestScript,
     #[error("INVALID URL")]
     InvalidUrl,
-    #[error("MQTT URL MUST START WITH mqtt:// OR mqtts://")]
+    #[error("MQTT URL MUST START WITH mqtt://, mqtts://, tcp:// OR ssl://")]
     InvalidMqttUrlScheme,
     #[error("MQTT ONLY SUPPORTS BASIC AUTH")]
     UnsupportedMqttAuth,
-    #[error("MQTT CLIENT ID IS REQUIRED WHEN CLEAN SESSION IS OFF")]
+    #[error("MQTT 3.1.1 CLIENT ID IS REQUIRED WHEN CLEAN SESSION IS OFF")]
     MqttClientIdRequired,
+    #[error("MQTT 5 KEEP ALIVE MUST BE AT LEAST 5 SECONDS")]
+    MqttKeepAliveTooShort,
     #[error("COULD NOT OPEN FILE")]
     CouldNotOpenFile,
     #[error("{0}")]

@@ -20,6 +20,7 @@ impl App<'_> {
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(3),
+                Constraint::Length(3),
             ]
         )
             .vertical_margin(1)
@@ -34,6 +35,7 @@ impl App<'_> {
         self.render_mqtt_form_field(frame, layout[1], request, MqttFormField::ClientId);
         self.render_mqtt_form_field(frame, last_row[0], request, MqttFormField::KeepAlive);
         self.render_mqtt_form_field(frame, last_row[1], request, MqttFormField::MaxPacketSize);
+        self.render_mqtt_form_field(frame, layout[3], request, MqttFormField::SessionExpiry);
     }
 
     pub(super) fn render_mqtt_publish_tab(&mut self, frame: &mut Frame, area: Rect, request: &Request) {

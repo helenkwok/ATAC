@@ -7,20 +7,16 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
 use crate::app::app::App;
-use crate::app::business_logic::request::mqtt::client::{MqttClient, MqttError, MqttEvent, PreparedMqttRequest};
+use crate::app::business_logic::request::mqtt::client::{MqttClient, MqttEvent, MqttEventLoop, PreparedMqttRequest};
 use crate::app::business_logic::request::send::{PrepareRequestError, RequestResponseError};
 use crate::models::auth::auth::Auth;
 use crate::models::auth::basic::BasicAuth;
 use crate::models::environment::Environment;
-use crate::models::protocol::mqtt::mqtt::{MqttCommand, MqttMessage, MqttMessageContent, MqttRequest, QoS};
+use crate::models::protocol::mqtt::mqtt::{MqttCommand, MqttMessage, MqttMessageContent, MqttRequest, MqttVersion, QoS};
 use crate::models::protocol::mqtt::payload::MqttPayload;
 use crate::models::protocol::ws::ws::Sender;
 use crate::models::request::Request;
 use crate::models::response::{RequestResponse, ResponseContent};
-
-const SESSION_STATE_MISMATCH_EXPLANATION: &str = "The broker answered a clean session connection with \"session present\", which MQTT does not allow.\n\
-Some brokers do this when the client ID previously had a persistent session, even though they discard it.\n\
-Sending the request again usually works, otherwise use another client ID.";
 
 impl App<'_> {
     pub fn prepare_mqtt_request(&self, request: &mut Request) -> Result<PreparedMqttRequest, PrepareRequestError> {
@@ -68,9 +64,16 @@ impl App<'_> {
 
         let client_id = self.replace_env_keys_by_value(&mqtt_request.client_id);
 
-        // Checked here because rumqttc panics on it
-        if client_id.is_empty() && !mqtt_request.clean_session {
+        // Checked here because rumqttc panics on it, MQTT 5 allows it and lets the broker assign an ID
+        if mqtt_request.version == MqttVersion::V3_1_1 && client_id.is_empty() && !mqtt_request.clean_session {
             return Err(PrepareRequestError::MqttClientIdRequired);
+        }
+
+        /* KEEP ALIVE */
+
+        // Same, rumqttc panics on MQTT 5 keep alives under 5 seconds
+        if mqtt_request.version == MqttVersion::V5 && mqtt_request.keep_alive < 5 {
+            return Err(PrepareRequestError::MqttKeepAliveTooShort);
         }
 
         /* SUBSCRIPTIONS */
@@ -88,10 +91,14 @@ impl App<'_> {
             use_tls,
             client_id,
             clean_session: mqtt_request.clean_session,
+            session_expiry_interval: mqtt_request.session_expiry_interval,
             keep_alive: mqtt_request.keep_alive,
             max_packet_size: mqtt_request.max_packet_size,
             credentials,
             subscriptions,
+            connection_timeout: (modified_request.settings.timeout.as_u32() as u64).div_ceil(1000).max(1),
+            accept_invalid_certs: modified_request.settings.accept_invalid_certs.as_bool(),
+            accept_invalid_hostnames: modified_request.settings.accept_invalid_hostnames.as_bool(),
         })
     }
 }
@@ -111,15 +118,15 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
     drop(request);
 
     let request_start = Instant::now();
-    let mut client: Option<MqttClient> = None;
+    let mut connection: Option<(MqttClient, MqttEventLoop)> = None;
 
     let mut response = match MqttClient::new(&prepared_request) {
         Err(error) => error_response(error),
-        Ok(mut new_client) => {
+        Ok((new_client, mut new_event_loop)) => {
             let connack = tokio::select! {
                 _ = cancellation_token.cancelled() => Err(String::from("CANCELED")),
                 _ = tokio::time::sleep(timeout) => Err(String::from("TIMEOUT")),
-                connack = wait_for_connack(&mut new_client) => Ok(connack),
+                connack = wait_for_connack(&mut new_event_loop) => Ok(connack),
             };
 
             match connack {
@@ -130,21 +137,14 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
                     cookies: None,
                     headers: vec![],
                 },
-                Ok(Err(MqttError::SessionStateMismatch)) => RequestResponse {
-                    duration: None,
-                    status_code: Some(String::from("SESSION PRESENT MISMATCH")),
-                    content: Some(ResponseContent::Body(String::from(SESSION_STATE_MISMATCH_EXPLANATION))),
-                    cookies: None,
-                    headers: vec![],
-                },
-                Ok(Err(MqttError::Other(error))) => error_response(error),
+                Ok(Err(error)) => error_response(error),
                 Ok(Ok((code, session_present, properties))) => {
                     info!("Connected to MQTT broker");
 
                     let mut headers = vec![(String::from("session present"), session_present.to_string())];
                     headers.extend(properties);
 
-                    client = Some(new_client);
+                    connection = Some((new_client, new_event_loop));
 
                     RequestResponse {
                         duration: None,
@@ -177,7 +177,7 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
     let mqtt_request = request.get_mqtt_request_mut().unwrap();
     mqtt_request.messages = vec![];
 
-    let Some(client) = client else {
+    let Some((client, event_loop)) = connection else {
         // The messages tab is where MQTT requests are read, so the reason goes there too
         if let Some(ResponseContent::Body(reason)) = &modified_response.content {
             mqtt_request.messages.push(MqttMessage {
@@ -202,7 +202,7 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
         }
     }
 
-    tokio::spawn(connection_loop(client, commands_receiver, local_request, received_response));
+    tokio::spawn(connection_loop(client, event_loop, commands_receiver, local_request, received_response));
 
     Ok(modified_response)
 }
@@ -259,16 +259,15 @@ pub fn mqtt_disconnect(mqtt_request: &mut MqttRequest) {
     }
 }
 
-async fn wait_for_connack(client: &mut MqttClient) -> Result<(String, bool, Vec<(String, String)>), MqttError> {
+async fn wait_for_connack(event_loop: &mut MqttEventLoop) -> Result<(String, bool, Vec<(String, String)>), String> {
     loop {
-        if let MqttEvent::ConnAck { code, session_present, properties } = client.poll().await? {
+        if let MqttEvent::ConnAck { code, session_present, properties } = event_loop.poll().await? {
             return Ok((code, session_present, properties));
         }
     }
 }
 
-async fn connection_loop(client: MqttClient, mut commands_receiver: UnboundedReceiver<MqttCommand>, local_request: Arc<RwLock<Request>>, received_response: Arc<Mutex<bool>>) {
-    let mut client = client;
+async fn connection_loop(client: MqttClient, mut event_loop: MqttEventLoop, mut commands_receiver: UnboundedReceiver<MqttCommand>, local_request: Arc<RwLock<Request>>, received_response: Arc<Mutex<bool>>) {
     let mut is_disconnecting = false;
 
     let reason = loop {
@@ -287,7 +286,7 @@ async fn connection_loop(client: MqttClient, mut commands_receiver: UnboundedRec
                     }
                 }
             },
-            event = client.poll() => match event {
+            event = event_loop.poll() => match event {
                 Ok(MqttEvent::Publish { topic, payload, qos, retain }) => {
                     let mut request = local_request.write();
                     let mqtt_request = request.get_mqtt_request_mut().unwrap();
@@ -307,8 +306,7 @@ async fn connection_loop(client: MqttClient, mut commands_receiver: UnboundedRec
                 Ok(MqttEvent::Disconnect(reason)) => break reason,
                 Ok(MqttEvent::Disconnected) => break String::from("Disconnected"),
                 Ok(MqttEvent::ConnAck { .. } | MqttEvent::Other) => continue,
-                Err(MqttError::SessionStateMismatch) => break String::from(SESSION_STATE_MISMATCH_EXPLANATION),
-                Err(MqttError::Other(error)) => {
+                Err(error) => {
                     error!("MQTT connection error: {}", error);
                     break format!("Connection closed: {error}");
                 }

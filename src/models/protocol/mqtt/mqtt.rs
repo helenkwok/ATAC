@@ -19,6 +19,10 @@ pub struct MqttRequest {
     #[serde(default = "default_clean_session")]
     pub clean_session: bool,
 
+    /// In seconds, MQTT 5 only, how long the broker keeps the session when clean session is off
+    #[serde(default = "default_session_expiry_interval")]
+    pub session_expiry_interval: u32,
+
     /// In seconds
     #[serde(default = "default_keep_alive")]
     pub keep_alive: u16,
@@ -53,6 +57,7 @@ impl Default for MqttRequest {
             version: MqttVersion::default(),
             client_id: String::new(),
             clean_session: default_clean_session(),
+            session_expiry_interval: default_session_expiry_interval(),
             keep_alive: default_keep_alive(),
             max_packet_size: default_max_packet_size(),
             subscriptions: vec![],
@@ -67,6 +72,11 @@ impl Default for MqttRequest {
 
 fn default_clean_session() -> bool {
     true
+}
+
+/// Long enough to test resuming a session, without leaving never-expiring sessions on shared brokers
+fn default_session_expiry_interval() -> u32 {
+    3600
 }
 
 fn default_keep_alive() -> u16 {

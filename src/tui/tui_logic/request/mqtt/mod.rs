@@ -11,6 +11,7 @@ pub enum MqttFormField {
     Version,
     ClientId,
     CleanSession,
+    SessionExpiry,
     KeepAlive,
     MaxPacketSize,
     PublishTopic,
@@ -25,6 +26,7 @@ impl MqttFormField {
             MqttFormField::Version => "Version",
             MqttFormField::ClientId => "Client ID",
             MqttFormField::CleanSession => "Clean session",
+            MqttFormField::SessionExpiry => "Session expiry (s, MQTT 5)",
             MqttFormField::KeepAlive => "Keep alive (s)",
             MqttFormField::MaxPacketSize => "Max packet size",
             MqttFormField::PublishTopic => "Topic",
@@ -39,6 +41,7 @@ impl MqttFormField {
             MqttFormField::Version => mqtt_request.version.to_string(),
             MqttFormField::ClientId => mqtt_request.client_id.clone(),
             MqttFormField::CleanSession => mqtt_request.clean_session.to_string(),
+            MqttFormField::SessionExpiry => mqtt_request.session_expiry_interval.to_string(),
             MqttFormField::KeepAlive => mqtt_request.keep_alive.to_string(),
             MqttFormField::MaxPacketSize => mqtt_request.max_packet_size.to_string(),
             MqttFormField::PublishTopic => mqtt_request.publish.topic.clone(),
@@ -50,16 +53,17 @@ impl MqttFormField {
 
     /// Fields edited with a text input, the others are cycled through
     pub fn is_text(&self) -> bool {
-        matches!(self, MqttFormField::ClientId | MqttFormField::KeepAlive | MqttFormField::MaxPacketSize | MqttFormField::PublishTopic)
+        matches!(self, MqttFormField::ClientId | MqttFormField::SessionExpiry | MqttFormField::KeepAlive | MqttFormField::MaxPacketSize | MqttFormField::PublishTopic)
     }
 }
 
-pub const MQTT_CONNECTION_FIELDS: [MqttFormField; 5] = [
+pub const MQTT_CONNECTION_FIELDS: [MqttFormField; 6] = [
     MqttFormField::Version,
     MqttFormField::CleanSession,
     MqttFormField::ClientId,
     MqttFormField::KeepAlive,
     MqttFormField::MaxPacketSize,
+    MqttFormField::SessionExpiry,
 ];
 
 pub const MQTT_PUBLISH_FIELDS: [MqttFormField; 4] = [
@@ -235,6 +239,10 @@ impl App<'_> {
                 MqttFormField::KeepAlive => match input_text.trim().parse::<u16>() {
                     Ok(keep_alive) => mqtt_request.keep_alive = keep_alive,
                     Err(_) => info!("Keep alive must be a number of seconds between 0 and 65535"),
+                },
+                MqttFormField::SessionExpiry => match input_text.trim().parse::<u32>() {
+                    Ok(session_expiry_interval) => mqtt_request.session_expiry_interval = session_expiry_interval,
+                    Err(_) => info!("Session expiry must be a number of seconds"),
                 },
                 MqttFormField::MaxPacketSize => match input_text.trim().parse::<u32>() {
                     Ok(max_packet_size) if max_packet_size > 0 => mqtt_request.max_packet_size = max_packet_size,
