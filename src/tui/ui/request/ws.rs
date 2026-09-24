@@ -12,6 +12,7 @@ use crate::tui::ui::views::RequestView;
 use crate::tui::utils::stateful::text_input::SingleLineTextInput;
 
 impl App<'_> {
+    /// Also used for MQTT requests, both keep a connection open
     pub fn render_ws_request(&mut self, frame: &mut Frame, rect: Rect, request: Request) {
         let request_layout = Layout::new(
             Vertical,
@@ -46,8 +47,6 @@ impl App<'_> {
 
         // REQUEST CONNECTION STATUS
 
-        let ws_request = request.get_ws_request().unwrap();
-
         let connection_status_block = Block::new()
             .title("Status").title_alignment(Alignment::Center)
             .borders(Borders::ALL)
@@ -56,7 +55,7 @@ impl App<'_> {
 
         let connection_status_area = connection_status_block.inner(request_header_layout[0]);
 
-        let connection_status_paragraph = match ws_request.is_connected {
+        let connection_status_paragraph = match request.is_connected() {
             true => Paragraph::new("Connected")
                 .bg(THEME.read().websocket.connection_status.connected)
                 .fg(THEME.read().ui.font_color)

@@ -152,6 +152,15 @@ impl Request {
         }
     }
 
+    /// Websocket and MQTT requests keep a connection open
+    pub fn is_connected(&self) -> bool {
+        match &self.protocol {
+            Protocol::HttpRequest(_) => false,
+            Protocol::WsRequest(ws_request) => ws_request.is_connected,
+            Protocol::MqttRequest(mqtt_request) => mqtt_request.is_connected,
+        }
+    }
+
     pub fn to_tree_item<'a>(&self, identifier: usize) -> TreeItem<'a, usize> {
         let mut line_elements: Vec<Span> = vec![];
 

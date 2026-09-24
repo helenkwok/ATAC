@@ -24,8 +24,14 @@ impl App<'_> {
                 RequestParamsTabs::Scripts => RequestParamsTabs::QueryParams,
                 _ => unreachable!()
             },
-            // Temporary until the MQTT request view exists
-            Protocol::MqttRequest(_) => self.request_param_tab
+            Protocol::MqttRequest(_) => match self.request_param_tab {
+                RequestParamsTabs::Auth => RequestParamsTabs::MqttConnection,
+                RequestParamsTabs::MqttConnection => RequestParamsTabs::MqttSubscriptions,
+                RequestParamsTabs::MqttSubscriptions => RequestParamsTabs::MqttPublish,
+                RequestParamsTabs::MqttPublish => RequestParamsTabs::Scripts,
+                RequestParamsTabs::Scripts => RequestParamsTabs::Auth,
+                _ => unreachable!()
+            }
         };
 
         self.tui_load_a_request_param_tab();
@@ -35,10 +41,12 @@ impl App<'_> {
         let local_selected_request = self.get_selected_request_as_local();
         let selected_request = local_selected_request.read();
 
+        let is_mqtt_tab = matches!(self.request_param_tab, RequestParamsTabs::MqttConnection | RequestParamsTabs::MqttSubscriptions | RequestParamsTabs::MqttPublish);
+
         match selected_request.protocol {
-            Protocol::HttpRequest(_) if self.request_param_tab == RequestParamsTabs::Message => self.request_param_tab = RequestParamsTabs::QueryParams,
-            Protocol::WsRequest(_) if self.request_param_tab == RequestParamsTabs::Body => self.request_param_tab = RequestParamsTabs::QueryParams,
-            Protocol::MqttRequest(_) if matches!(self.request_param_tab, RequestParamsTabs::Body | RequestParamsTabs::Message) => self.request_param_tab = RequestParamsTabs::QueryParams,
+            Protocol::HttpRequest(_) if is_mqtt_tab || self.request_param_tab == RequestParamsTabs::Message => self.request_param_tab = RequestParamsTabs::QueryParams,
+            Protocol::WsRequest(_) if is_mqtt_tab || self.request_param_tab == RequestParamsTabs::Body => self.request_param_tab = RequestParamsTabs::QueryParams,
+            Protocol::MqttRequest(_) if matches!(self.request_param_tab, RequestParamsTabs::QueryParams | RequestParamsTabs::Headers | RequestParamsTabs::Body | RequestParamsTabs::Message) => self.request_param_tab = RequestParamsTabs::MqttConnection,
             _ => {}
         };
     }
@@ -50,6 +58,7 @@ impl App<'_> {
             RequestParamsTabs::Headers => self.tui_load_request_headers_tab(),
             RequestParamsTabs::Body => self.tui_load_request_body_param_tab(),
             RequestParamsTabs::Message => self.tui_load_request_message_param_tab(),
+            RequestParamsTabs::MqttConnection | RequestParamsTabs::MqttSubscriptions | RequestParamsTabs::MqttPublish => self.tui_load_request_mqtt_tab(self.request_param_tab),
             RequestParamsTabs::Scripts => {}
         }
     }

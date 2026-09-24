@@ -15,7 +15,11 @@ impl App<'_> {
 
         self.request_result_tab = match self.request_result_tab {
             RequestResultTabs::Body => RequestResultTabs::Cookies,
-            RequestResultTabs::Messages => RequestResultTabs::Cookies,
+            // MQTT has no cookies
+            RequestResultTabs::Messages => match selected_request.protocol {
+                Protocol::MqttRequest(_) => RequestResultTabs::Headers,
+                _ => RequestResultTabs::Cookies
+            },
             RequestResultTabs::Cookies => RequestResultTabs::Headers,
             RequestResultTabs::Headers => {
                 let local_selected_request = self.get_selected_request_as_local();
@@ -25,7 +29,7 @@ impl App<'_> {
                     (None, None) => match selected_request.protocol {
                         Protocol::HttpRequest(_) => RequestResultTabs::Body,
                         Protocol::WsRequest(_) => RequestResultTabs::Messages,
-                        Protocol::MqttRequest(_) => RequestResultTabs::Cookies
+                        Protocol::MqttRequest(_) => RequestResultTabs::Messages
                     },
                     (_, _) => RequestResultTabs::Console
                 }
@@ -33,7 +37,7 @@ impl App<'_> {
             RequestResultTabs::Console => match selected_request.protocol {
                 Protocol::HttpRequest(_) => RequestResultTabs::Body,
                 Protocol::WsRequest(_) => RequestResultTabs::Messages,
-                Protocol::MqttRequest(_) => RequestResultTabs::Cookies
+                Protocol::MqttRequest(_) => RequestResultTabs::Messages
             }
         };
 
@@ -48,15 +52,14 @@ impl App<'_> {
             self.request_result_tab = match selected_request.protocol {
                 Protocol::HttpRequest(_) => RequestResultTabs::Body,
                 Protocol::WsRequest(_) => RequestResultTabs::Messages,
-                Protocol::MqttRequest(_) => RequestResultTabs::Cookies
+                Protocol::MqttRequest(_) => RequestResultTabs::Messages
             };
         }
         else {
             match selected_request.protocol {
                 Protocol::HttpRequest(_) if self.request_result_tab == RequestResultTabs::Messages => self.request_result_tab = RequestResultTabs::Body,
                 Protocol::WsRequest(_) if self.request_result_tab == RequestResultTabs::Body => self.request_result_tab = RequestResultTabs::Messages,
-                // The messages tab expects a websocket request, until the MQTT request view exists
-                Protocol::MqttRequest(_) if matches!(self.request_result_tab, RequestResultTabs::Body | RequestResultTabs::Messages) => self.request_result_tab = RequestResultTabs::Cookies,
+                Protocol::MqttRequest(_) if matches!(self.request_result_tab, RequestResultTabs::Body | RequestResultTabs::Cookies) => self.request_result_tab = RequestResultTabs::Messages,
                 _ => {}
             };
         }

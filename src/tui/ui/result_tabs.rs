@@ -18,6 +18,7 @@ use crate::app::files::theme::THEME;
 use crate::models::protocol::protocol::Protocol;
 use crate::models::protocol::ws::ws::Sender;
 use crate::models::request::Request;
+use crate::tui::tui_logic::request::messages::get_displayed_messages;
 use crate::models::response::ResponseContent;
 use crate::tui::utils::centered_rect::centered_rect;
 
@@ -64,8 +65,11 @@ impl App<'_> {
                 RequestResultTabs::Headers,
                 RequestResultTabs::Console
             ],
-            // Not rendered until the MQTT request view exists
-            Protocol::MqttRequest(_) => unreachable!()
+            Protocol::MqttRequest(_) => vec![
+                RequestResultTabs::Messages,
+                RequestResultTabs::Headers,
+                RequestResultTabs::Console
+            ]
         };
 
         let result_tabs: Vec<Span> = allowed_tabs
@@ -81,10 +85,10 @@ impl App<'_> {
                         }
                     },
                     RequestResultTabs::Messages => {
-                        let ws_request = request.get_ws_request().unwrap();
+                        let messages_count = get_displayed_messages(request).len();
 
-                        if !ws_request.messages.is_empty() {
-                            Some(format!("{} ({})", tab.to_string(), ws_request.messages.len()))
+                        if messages_count > 0 {
+                            Some(format!("{} ({})", tab.to_string(), messages_count))
                         }
                         else {
                             Some(format!("{}", tab.to_string()))
@@ -121,7 +125,12 @@ impl App<'_> {
                 RequestResultTabs::Console => 3,
                 _ => unreachable!()
             }
-            Protocol::MqttRequest(_) => unreachable!()
+            Protocol::MqttRequest(_) => match self.request_result_tab {
+                RequestResultTabs::Messages => 0,
+                RequestResultTabs::Headers => 1,
+                RequestResultTabs::Console => 2,
+                _ => unreachable!()
+            }
         };
 
         let result_tabs = Tabs::new(result_tabs)
@@ -224,16 +233,16 @@ impl App<'_> {
                     }
                 },
                 RequestResultTabs::Messages => {
-                    let ws_request = request.get_ws_request().unwrap();
+                    let displayed_messages = get_displayed_messages(request);
 
                     let mut messages = vec![];
                     let mut last_sender: Option<&Sender> = None;
 
-                    for message in &ws_request.messages {
+                    for message in &displayed_messages {
                         let mut alignment = Alignment::Right;
 
-                        let content = message.content.to_content();
-                        let max_length = self.get_max_line_length(&content);
+                        let content = &message.content;
+                        let max_length = self.get_max_line_length(content);
                         let lines = wrap(&content, max_length);
 
                         match message.sender {
@@ -290,7 +299,7 @@ impl App<'_> {
                         let timestamp = message.timestamp.format(timestamp_format).to_string();
 
                         messages.push(
-                            Line::raw(format!("{} {}", message.content.to_string(), timestamp))
+                            Line::raw(format!("{} {}", message.details, timestamp))
                                 .fg(THEME.read().websocket.messages.details_color)
                                 .alignment(alignment)
                         );

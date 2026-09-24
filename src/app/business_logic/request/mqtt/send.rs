@@ -178,6 +178,15 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
     mqtt_request.messages = vec![];
 
     let Some(client) = client else {
+        // The messages tab is where MQTT requests are read, so the reason goes there too
+        if let Some(ResponseContent::Body(reason)) = &modified_response.content {
+            mqtt_request.messages.push(MqttMessage {
+                timestamp: Local::now(),
+                sender: Sender::Server,
+                content: MqttMessageContent::Event(reason.clone()),
+            });
+        }
+
         return Ok(modified_response);
     };
 

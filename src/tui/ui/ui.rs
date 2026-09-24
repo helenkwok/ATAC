@@ -5,7 +5,7 @@ use ratatui::layout::Direction::{Horizontal, Vertical};
 use ratatui::prelude::{Modifier};
 use ratatui::style::{Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders};
 
 use crate::app::app::{App};
 use crate::app::files::theme::THEME;
@@ -106,14 +106,7 @@ impl App<'_> {
 
                 match selected_request.protocol {
                     Protocol::HttpRequest(_) => self.render_http_request(frame, inner_layout[1], selected_request),
-                    Protocol::WsRequest(_) => self.render_ws_request(frame, inner_layout[1], selected_request),
-                    // Temporary until the MQTT request view exists
-                    Protocol::MqttRequest(_) => frame.render_widget(
-                        Paragraph::new(format!("{}\n\nMQTT requests cannot be displayed yet", selected_request.name))
-                            .centered()
-                            .fg(THEME.read().ui.font_color),
-                        inner_layout[1]
-                    ),
+                    Protocol::WsRequest(_) | Protocol::MqttRequest(_) => self.render_ws_request(frame, inner_layout[1], selected_request),
                 }
             }
         }
