@@ -48,3 +48,40 @@ pub fn next_payload_type(payload: &MqttPayload) -> MqttPayload {
         MqttPayload::Binary(binary) => MqttPayload::Text(String::from_utf8_lossy(binary).to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::models::protocol::mqtt::payload::{next_payload_type, MqttPayload};
+
+    #[test]
+    fn utf8_bytes_are_text() {
+        assert_eq!(MqttPayload::from_bytes("21.5 °C".as_bytes()), MqttPayload::Text(String::from("21.5 °C")));
+        assert_eq!(MqttPayload::from_bytes(b""), MqttPayload::Text(String::new()));
+    }
+
+    #[test]
+    fn other_bytes_are_binary_and_kept_intact() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let payload = MqttPayload::from_bytes(&bytes);
+
+        assert!(matches!(payload, MqttPayload::Binary(_)));
+        assert_eq!(payload.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn switching_type_keeps_the_text() {
+        let text = MqttPayload::Text(String::from("hello"));
+        let binary = next_payload_type(&text);
+
+        assert_eq!(binary.to_bytes(), b"hello");
+        assert_eq!(next_payload_type(&binary), text);
+    }
+
+    #[test]
+    fn saved_payload_round_trips() {
+        for payload in [MqttPayload::Text(String::from("a")), MqttPayload::Binary(vec![0, 255].into_boxed_slice())] {
+            let json = serde_json::to_string(&payload).unwrap();
+            assert_eq!(serde_json::from_str::<MqttPayload>(&json).unwrap(), payload);
+        }
+    }
+}

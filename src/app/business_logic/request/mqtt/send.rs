@@ -369,3 +369,225 @@ fn error_response(error: String) -> RequestResponse {
         headers: vec![],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use indexmap::IndexMap;
+    use parking_lot::RwLock;
+    use crate::app::app::App;
+    use crate::app::business_logic::request::mqtt::client::PreparedMqttRequest;
+    use crate::app::business_logic::request::mqtt::send::mqtt_publish;
+    use crate::app::business_logic::request::send::PrepareRequestError;
+    use crate::models::auth::auth::Auth;
+    use crate::models::auth::basic::BasicAuth;
+    use crate::models::auth::bearer_token::BearerToken;
+    use crate::models::environment::Environment;
+    use crate::models::protocol::mqtt::mqtt::{MqttCommand, MqttMessageContent, MqttRequest, MqttSubscription, MqttVersion, QoS};
+    use crate::models::protocol::mqtt::payload::MqttPayload;
+    use crate::models::protocol::protocol::Protocol;
+    use crate::models::request::Request;
+    use crate::models::settings::Setting;
+
+    fn request(url: &str, edit: impl FnOnce(&mut MqttRequest)) -> Request {
+        let mut mqtt_request = MqttRequest::default();
+        edit(&mut mqtt_request);
+
+        Request {
+            url: url.to_string(),
+            protocol: Protocol::MqttRequest(mqtt_request),
+            ..Default::default()
+        }
+    }
+
+    fn prepare(request: &mut Request) -> Result<PreparedMqttRequest, PrepareRequestError> {
+        App::new().unwrap().prepare_mqtt_request(request)
+    }
+
+    #[test]
+    fn url_schemes_and_default_ports() {
+        for (url, use_tls, port) in [
+            ("mqtt://broker", false, 1883),
+            ("tcp://broker", false, 1883),
+            ("mqtts://broker", true, 8883),
+            ("ssl://broker", true, 8883),
+            ("mqtt://broker:1884", false, 1884),
+            ("mqtts://broker:8886", true, 8886),
+        ] {
+            let prepared = prepare(&mut request(url, |_| {})).unwrap();
+
+            assert_eq!(prepared.host, "broker", "{url}");
+            assert_eq!(prepared.use_tls, use_tls, "{url}");
+            assert_eq!(prepared.port, port, "{url}");
+        }
+    }
+
+    #[test]
+    fn invalid_urls_are_refused() {
+        for url in ["http://broker", "ws://broker", "wss://broker"] {
+            assert!(matches!(prepare(&mut request(url, |_| {})), Err(PrepareRequestError::InvalidMqttUrlScheme)), "{url}");
+        }
+
+        for url in ["", "broker", "mqtt://"] {
+            assert!(matches!(prepare(&mut request(url, |_| {})), Err(PrepareRequestError::InvalidUrl)), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn only_basic_auth_is_supported() {
+        let mut no_auth = request("mqtt://broker", |_| {});
+        assert!(prepare(&mut no_auth).unwrap().credentials.is_none());
+
+        let mut basic = request("mqtt://broker", |_| {});
+        basic.auth = Auth::BasicAuth(BasicAuth { username: String::from("user"), password: String::from("pass") });
+        assert_eq!(prepare(&mut basic).unwrap().credentials, Some((String::from("user"), String::from("pass"))));
+
+        let mut bearer = request("mqtt://broker", |_| {});
+        bearer.auth = Auth::BearerToken(BearerToken { token: String::from("token") });
+        assert!(matches!(prepare(&mut bearer), Err(PrepareRequestError::UnsupportedMqttAuth)));
+    }
+
+    #[test]
+    fn empty_client_id_needs_clean_session_in_3_1_1_only() {
+        let persistent = |version| request("mqtt://broker", |mqtt_request| {
+            mqtt_request.version = version;
+            mqtt_request.clean_session = false;
+        });
+
+        assert!(matches!(prepare(&mut persistent(MqttVersion::V3_1_1)), Err(PrepareRequestError::MqttClientIdRequired)));
+        assert!(prepare(&mut persistent(MqttVersion::V5)).is_ok());
+    }
+
+    #[test]
+    fn mqtt_5_keep_alive_must_be_at_least_5_seconds() {
+        let keep_alive = |version, keep_alive| request("mqtt://broker", |mqtt_request| {
+            mqtt_request.version = version;
+            mqtt_request.keep_alive = keep_alive;
+        });
+
+        assert!(matches!(prepare(&mut keep_alive(MqttVersion::V5, 4)), Err(PrepareRequestError::MqttKeepAliveTooShort)));
+        assert!(prepare(&mut keep_alive(MqttVersion::V5, 5)).is_ok());
+        assert!(prepare(&mut keep_alive(MqttVersion::V3_1_1, 0)).is_ok());
+    }
+
+    #[test]
+    fn zero_max_packet_size_is_refused() {
+        let mut zero = request("mqtt://broker", |mqtt_request| mqtt_request.max_packet_size = 0);
+        assert!(matches!(prepare(&mut zero), Err(PrepareRequestError::MqttMaxPacketSizeZero)));
+    }
+
+    #[test]
+    fn only_enabled_subscriptions_are_kept() {
+        let mut subscriptions = request("mqtt://broker", |mqtt_request| {
+            mqtt_request.subscriptions = vec![
+                MqttSubscription { enabled: true, topic: String::from("a/#"), qos: QoS::AtLeastOnce },
+                MqttSubscription { enabled: false, topic: String::from("b/#"), qos: QoS::AtMostOnce },
+            ];
+        });
+
+        assert_eq!(prepare(&mut subscriptions).unwrap().subscriptions, vec![(String::from("a/#"), QoS::AtLeastOnce)]);
+    }
+
+    #[test]
+    fn timeout_is_rounded_up_to_whole_seconds() {
+        for (timeout_ms, seconds) in [(0, 1), (1, 1), (1000, 1), (1001, 2), (30000, 30)] {
+            let mut timeout = request("mqtt://broker", |_| {});
+            timeout.settings.timeout = Setting::U32(timeout_ms);
+
+            assert_eq!(prepare(&mut timeout).unwrap().connection_timeout, seconds, "{timeout_ms} ms");
+        }
+    }
+
+    #[test]
+    fn tls_settings_are_passed_on() {
+        let mut settings = request("mqtts://broker", |_| {});
+        settings.settings.accept_invalid_certs = Setting::Bool(true);
+
+        let prepared = prepare(&mut settings).unwrap();
+        assert!(prepared.accept_invalid_certs);
+        assert!(!prepared.accept_invalid_hostnames);
+    }
+
+    #[test]
+    fn environment_variables_are_replaced() {
+        let mut app = App::new().unwrap();
+        app.environments.push(Arc::new(RwLock::new(Environment {
+            name: String::from("env"),
+            values: IndexMap::from([
+                (String::from("HOST"), String::from("broker")),
+                (String::from("ID"), String::from("client")),
+                (String::from("TOPIC"), String::from("sensors")),
+                (String::from("BROKER_USER"), String::from("user")),
+            ]),
+            path: Default::default(),
+        })));
+
+        let mut with_variables = request("mqtts://{{HOST}}:8886", |mqtt_request| {
+            mqtt_request.client_id = String::from("{{ID}}");
+            mqtt_request.subscriptions = vec![MqttSubscription { enabled: true, topic: String::from("{{TOPIC}}/#"), qos: QoS::AtMostOnce }];
+        });
+        with_variables.auth = Auth::BasicAuth(BasicAuth { username: String::from("{{BROKER_USER}}"), password: String::new() });
+
+        let prepared = app.prepare_mqtt_request(&mut with_variables).unwrap();
+
+        assert_eq!(prepared.host, "broker");
+        assert_eq!(prepared.client_id, "client");
+        assert_eq!(prepared.subscriptions[0].0, "sensors/#");
+        assert_eq!(prepared.credentials, Some((String::from("user"), String::new())));
+    }
+
+    #[test]
+    fn pre_request_script_changing_the_protocol_is_an_error() {
+        let mut script = request("mqtt://broker", |_| {});
+        script.scripts.pre_request_script = Some(String::from(r#"request.protocol = { "type": "http", "method": "GET", "body": "no_body" };"#));
+
+        assert!(matches!(prepare(&mut script), Err(PrepareRequestError::PreRequestScript)));
+    }
+
+    /// Returns the connection receiver to look at what would be sent to the broker
+    fn connected(version: MqttVersion, max_packet_size: u32) -> (MqttRequest, tokio::sync::mpsc::UnboundedReceiver<MqttCommand>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mqtt_request = MqttRequest {
+            version,
+            max_packet_size,
+            connection: Some(sender),
+            is_connected: true,
+            ..Default::default()
+        };
+
+        (mqtt_request, receiver)
+    }
+
+    #[test]
+    fn publish_up_to_the_max_packet_size() {
+        // One byte topic, 9 bytes of headers in 3.1.1 and 10 in MQTT 5
+        for (version, largest_payload) in [(MqttVersion::V3_1_1, 90), (MqttVersion::V5, 89)] {
+            let (mut mqtt_request, mut receiver) = connected(version, 100);
+
+            mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text("x".repeat(largest_payload)), QoS::AtLeastOnce, false);
+            assert!(matches!(receiver.try_recv(), Ok(MqttCommand::Publish { .. })), "{version}");
+            assert!(matches!(mqtt_request.messages.last().unwrap().content, MqttMessageContent::Publish { .. }));
+
+            mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text("x".repeat(largest_payload + 1)), QoS::AtLeastOnce, false);
+            assert!(receiver.try_recv().is_err(), "{version}");
+            assert!(matches!(&mqtt_request.messages.last().unwrap().content, MqttMessageContent::Event(event) if event.starts_with("Not published")));
+        }
+    }
+
+    #[test]
+    fn publish_is_ignored_when_not_connected() {
+        let mut mqtt_request = MqttRequest::default();
+
+        mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text(String::from("x")), QoS::AtMostOnce, false);
+        assert!(mqtt_request.messages.is_empty());
+    }
+
+    #[test]
+    fn publish_after_the_connection_ended_is_not_logged() {
+        let (mut mqtt_request, receiver) = connected(MqttVersion::V3_1_1, 100);
+        drop(receiver);
+
+        mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text(String::from("x")), QoS::AtMostOnce, false);
+        assert!(mqtt_request.messages.is_empty());
+    }
+}

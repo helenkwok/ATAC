@@ -330,3 +330,134 @@ fn connack_properties_to_vec(properties: &rumqttc::v5::mqttbytes::v5::ConnAckPro
 
     properties_vec
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use base64::Engine;
+    use base64::prelude::BASE64_STANDARD;
+    use rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier;
+    use rumqttc::tokio_rustls::rustls::client::WebPkiServerVerifier;
+    use rumqttc::tokio_rustls::rustls::crypto::aws_lc_rs;
+    use rumqttc::tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rumqttc::tokio_rustls::rustls::{CertificateError, Error, RootCertStore};
+    use crate::app::business_logic::request::mqtt::client::*;
+
+    /// Self-signed test CA and a certificate it issued for mqtt.example.test, both valid for 100 years
+    const TEST_CA: &str = "MIIBlTCCATugAwIBAgIUGZ0CcuPyEV/J5UCg9DITTeeM3VMwCgYIKoZIzj0EAwIwFzEVMBMGA1UEAwwMQVRBQyB0ZXN0IENBMCAXDTI2MDkyNDEzMTI0NFoYDzIxMjYwODMxMTMxMjQ0WjAXMRUwEwYDVQQDDAxBVEFDIHRlc3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASB8Y0VPNZJBYRHL1qzke7EKQnpxKKnkWj0ymCTOiB7EePFnRDnCjFLbti537giAJEqOoEvHPLZ06JqnPO8UqLdo2MwYTAdBgNVHQ4EFgQUVzgN5dNJ+zwXSaJ6wcI2HOrNrpcwHwYDVR0jBBgwFoAUVzgN5dNJ+zwXSaJ6wcI2HOrNrpcwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAgQwCgYIKoZIzj0EAwIDSAAwRQIgIxti5Sk4bsd6Hwck4ofl8CS/sr/RXS1I6qIUQu7n50wCIQDrpcR+z8R9T8S3QxT5zPz8xhi+ZAh3ms2UX2yF8neAeA==";
+    const TEST_LEAF: &str = "MIIBzDCCAXKgAwIBAgIUOG70x4whkXf2HwFeTLIZ2hp4wLYwCgYIKoZIzj0EAwIwFzEVMBMGA1UEAwwMQVRBQyB0ZXN0IENBMCAXDTI2MDkyNDEzMTI0NFoYDzIxMjYwODMxMTMxMjQ0WjAcMRowGAYDVQQDDBFtcXR0LmV4YW1wbGUudGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJbTgRACHbMPCtcyejBhTN00p+w59DkagrTbeNJ7zpLFnMmEPXPEMhCTu5piwmOvRh7KviI47JHgShtVnm1RJXijgZQwgZEwHAYDVR0RBBUwE4IRbXF0dC5leGFtcGxlLnRlc3QwDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwHQYDVR0OBBYEFHlCh8m1J/Ozoj5b58C4IdVjytrCMB8GA1UdIwQYMBaAFFc4DeXTSfs8F0miesHCNhzqza6XMAoGCCqGSM49BAMCA0gAMEUCIQD/UHyiCpDlJ1ss5BKnxQPyNOBOV6AJuDgb55Fx9p1hnAIgBIhzeOLYV8ZQ/yt4UotnX8f9AgmtLw7UHSFYl7akpoM=";
+
+    fn der(base64: &str) -> CertificateDer<'static> {
+        CertificateDer::from(BASE64_STANDARD.decode(base64).unwrap())
+    }
+
+    /// A verifier trusting only the test CA, or None to accept every certificate
+    fn verifier(trusts_test_ca: bool, accept_invalid_hostnames: bool) -> RequestSettingsVerifier {
+        let provider = Arc::new(aws_lc_rs::default_provider());
+
+        let verifier = trusts_test_ca.then(|| {
+            let mut roots = RootCertStore::empty();
+            roots.add(der(TEST_CA)).unwrap();
+            WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().unwrap()
+        });
+
+        RequestSettingsVerifier {
+            verifier,
+            supported_schemes: provider.signature_verification_algorithms.supported_schemes(),
+            accept_invalid_hostnames,
+        }
+    }
+
+    fn verify(verifier: &RequestSettingsVerifier, name: &str, cert: CertificateDer<'static>) -> Result<(), Error> {
+        let name = ServerName::try_from(name.to_string()).unwrap();
+        verifier.verify_server_cert(&cert, &[], &name, &[], UnixTime::now()).map(|_| ())
+    }
+
+    #[test]
+    fn trusted_certificate_for_the_right_name_is_accepted() {
+        assert!(verify(&verifier(true, false), "mqtt.example.test", der(TEST_LEAF)).is_ok());
+    }
+
+    #[test]
+    fn wrong_name_is_refused_unless_invalid_hostnames_are_accepted() {
+        let refused = verify(&verifier(true, false), "other.example.test", der(TEST_LEAF));
+        assert!(matches!(refused, Err(Error::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }))));
+
+        assert!(verify(&verifier(true, true), "other.example.test", der(TEST_LEAF)).is_ok());
+    }
+
+    #[test]
+    fn accepting_invalid_hostnames_does_not_accept_untrusted_certificates() {
+        // The platform roots don't include the test CA
+        let provider = Arc::new(aws_lc_rs::default_provider());
+        let mut roots = RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            roots.add(cert).ok();
+        }
+
+        // No platform certificates on this machine, nothing to compare with
+        if roots.is_empty() {
+            return;
+        }
+
+        let untrusted = RequestSettingsVerifier {
+            verifier: Some(WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().unwrap()),
+            supported_schemes: provider.signature_verification_algorithms.supported_schemes(),
+            accept_invalid_hostnames: true,
+        };
+
+        assert!(verify(&untrusted, "mqtt.example.test", der(TEST_LEAF)).is_err());
+    }
+
+    #[test]
+    fn accepting_invalid_certificates_accepts_anything() {
+        let accept_all = verifier(false, false);
+
+        assert!(verify(&accept_all, "other.example.test", der(TEST_LEAF)).is_ok());
+        assert!(verify(&accept_all, "mqtt.example.test", CertificateDer::from(vec![0u8; 16])).is_ok());
+        assert!(!accept_all.supported_verify_schemes().is_empty());
+    }
+
+    #[test]
+    fn tls_configuration_builds_with_every_setting() {
+        for (accept_invalid_certs, accept_invalid_hostnames) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert!(tls_configuration(accept_invalid_certs, accept_invalid_hostnames).is_ok());
+        }
+    }
+
+    #[test]
+    fn qos_converts_both_ways() {
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            assert_eq!(from_v4_qos(to_v4_qos(qos)), qos);
+            assert_eq!(from_v5_qos(to_v5_qos(qos)), qos);
+        }
+    }
+
+    fn prepared(version: MqttVersion, use_tls: bool) -> PreparedMqttRequest {
+        PreparedMqttRequest {
+            version,
+            host: String::from("mqtt.example.test"),
+            port: 1883,
+            use_tls,
+            client_id: String::from("atac-test"),
+            clean_session: false,
+            session_expiry_interval: 3600,
+            keep_alive: 60,
+            max_packet_size: 1024,
+            credentials: Some((String::from("user"), String::from("pass"))),
+            subscriptions: vec![],
+            connection_timeout: 5,
+            accept_invalid_certs: false,
+            accept_invalid_hostnames: false,
+        }
+    }
+
+    #[test]
+    fn clients_are_created_without_connecting() {
+        for version in [MqttVersion::V3_1_1, MqttVersion::V5] {
+            for use_tls in [false, true] {
+                assert!(MqttClient::new(&prepared(version, use_tls)).is_ok(), "{version} tls {use_tls}");
+            }
+        }
+    }
+}

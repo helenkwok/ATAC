@@ -179,3 +179,72 @@ pub enum MqttCommand {
 pub fn should_skip_requests_messages(_: &Vec<MqttMessage>) -> bool {
     *SKIP_SAVE_REQUESTS_RESPONSE.get().unwrap_or(&true)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::models::protocol::mqtt::mqtt::{MqttRequest, MqttVersion, QoS};
+    use crate::models::protocol::protocol::Protocol;
+
+    #[test]
+    fn minimal_request_gets_defaults() {
+        let protocol: Protocol = serde_json::from_str(r#"{ "type": "mqtt" }"#).unwrap();
+        let Protocol::MqttRequest(mqtt_request) = protocol else { panic!("not an MQTT request") };
+
+        assert_eq!(mqtt_request.version, MqttVersion::V3_1_1);
+        assert_eq!(mqtt_request.client_id, "");
+        assert!(mqtt_request.clean_session);
+        assert_eq!(mqtt_request.session_expiry_interval, 3600);
+        assert_eq!(mqtt_request.keep_alive, 60);
+        assert_eq!(mqtt_request.max_packet_size, 1024 * 1024);
+        assert!(mqtt_request.subscriptions.is_empty());
+        assert_eq!(mqtt_request.publish.topic, "");
+        assert!(!mqtt_request.is_connected);
+    }
+
+    #[test]
+    fn file_from_before_session_expiry_still_loads() {
+        let json = r#"{
+            "type": "mqtt", "version": "5", "client_id": "id", "clean_session": false, "keep_alive": 30, "max_packet_size": 4096,
+            "subscriptions": [{ "enabled": true, "topic": "a/#", "qos": "exactly_once" }],
+            "publish": { "topic": "a/b", "qos": "at_least_once", "retain": true }
+        }"#;
+        let Protocol::MqttRequest(mqtt_request) = serde_json::from_str(json).unwrap() else { panic!("not an MQTT request") };
+
+        assert_eq!(mqtt_request.version, MqttVersion::V5);
+        assert_eq!(mqtt_request.session_expiry_interval, 3600);
+        assert_eq!(mqtt_request.subscriptions[0].qos, QoS::ExactlyOnce);
+        assert_eq!(mqtt_request.publish.qos, QoS::AtLeastOnce);
+        assert!(mqtt_request.publish.retain);
+    }
+
+    #[test]
+    fn runtime_state_is_not_saved() {
+        let mut mqtt_request = MqttRequest::default();
+        mqtt_request.is_connected = true;
+        mqtt_request.connection = Some(tokio::sync::mpsc::unbounded_channel().0);
+
+        let json = serde_json::to_string(&Protocol::MqttRequest(mqtt_request)).unwrap();
+
+        assert!(!json.contains("is_connected"));
+        assert!(!json.contains("connection"));
+        assert!(!json.contains("payload"));
+    }
+
+    #[test]
+    fn version_and_qos_names_round_trip() {
+        for (version, name) in [(MqttVersion::V3_1_1, "\"3.1.1\""), (MqttVersion::V5, "\"5\"")] {
+            assert_eq!(serde_json::to_string(&version).unwrap(), name);
+            assert_eq!(serde_json::from_str::<MqttVersion>(name).unwrap(), version);
+        }
+
+        for (qos, name) in [(QoS::AtMostOnce, "\"at_most_once\""), (QoS::AtLeastOnce, "\"at_least_once\""), (QoS::ExactlyOnce, "\"exactly_once\"")] {
+            assert_eq!(serde_json::to_string(&qos).unwrap(), name);
+            assert_eq!(serde_json::from_str::<QoS>(name).unwrap(), qos);
+        }
+    }
+
+    #[test]
+    fn unknown_version_is_an_error() {
+        assert!(serde_json::from_str::<Protocol>(r#"{ "type": "mqtt", "version": "4" }"#).is_err());
+    }
+}

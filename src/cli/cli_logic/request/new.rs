@@ -254,3 +254,78 @@ fn get_content_type_from_body_args(body_args: BodyArgs) -> ContentType {
         return ContentType::NoBody;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use crate::cli::cli_logic::request::new::create_request_from_new_request_command;
+    use crate::cli::commands::request_commands::new::NewRequestCommand;
+    use crate::models::protocol::mqtt::mqtt::{MqttVersion, QoS};
+    use crate::models::protocol::protocol::Protocol;
+    use crate::models::request::Request;
+
+    #[derive(Parser)]
+    struct TestArgs {
+        #[command(flatten)]
+        command: NewRequestCommand,
+    }
+
+    fn new_request(args: &[&str]) -> anyhow::Result<Request> {
+        let command = TestArgs::try_parse_from(std::iter::once("atac").chain(args.iter().copied()))?.command;
+        create_request_from_new_request_command(String::from("test"), command)
+    }
+
+    #[test]
+    fn mqtt_options_are_applied() {
+        let request = new_request(&[
+            "-p", "MQTT", "-u", "mqtts://broker:8886",
+            "--mqtt-version", "5", "--client-id", "atac", "--no-clean-session", "--session-expiry", "120",
+            "--keep-alive", "30", "--max-packet-size", "4096",
+            "--add-subscription", "a/#", "1", "--add-subscription", "b/+", "2",
+            "--publish-topic", "a/b", "--publish-qos", "2", "--publish-retain",
+        ]).unwrap();
+
+        let Protocol::MqttRequest(mqtt_request) = &request.protocol else { panic!("not an MQTT request") };
+
+        assert_eq!(request.url, "mqtts://broker:8886");
+        assert_eq!(mqtt_request.version, MqttVersion::V5);
+        assert_eq!(mqtt_request.client_id, "atac");
+        assert!(!mqtt_request.clean_session);
+        assert_eq!(mqtt_request.session_expiry_interval, 120);
+        assert_eq!(mqtt_request.keep_alive, 30);
+        assert_eq!(mqtt_request.max_packet_size, 4096);
+        assert_eq!(mqtt_request.subscriptions.len(), 2);
+        assert_eq!((mqtt_request.subscriptions[1].topic.as_str(), mqtt_request.subscriptions[1].qos), ("b/+", QoS::ExactlyOnce));
+        assert_eq!((mqtt_request.publish.topic.as_str(), mqtt_request.publish.qos, mqtt_request.publish.retain), ("a/b", QoS::ExactlyOnce, true));
+    }
+
+    #[test]
+    fn mqtt_requests_have_no_http_headers() {
+        assert!(new_request(&["-p", "MQTT"]).unwrap().headers.is_empty());
+        assert!(!new_request(&["-p", "HTTP"]).unwrap().headers.is_empty());
+    }
+
+    #[test]
+    fn mqtt_options_need_an_mqtt_request() {
+        for protocol in ["HTTP", "websocket"] {
+            assert!(new_request(&["-p", protocol, "--client-id", "atac"]).is_err(), "{protocol}");
+            assert!(new_request(&["-p", protocol, "--add-subscription", "a", "0"]).is_err(), "{protocol}");
+        }
+    }
+
+    #[test]
+    fn http_options_are_refused_on_mqtt_requests() {
+        assert!(new_request(&["-p", "MQTT", "-m", "POST"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--body-raw", "x"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--add-header", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn invalid_values_are_refused() {
+        assert!(new_request(&["-p", "MQTT", "--add-subscription", "a", "3"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--publish-qos", "3"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--mqtt-version", "4"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--max-packet-size", "0"]).is_err());
+        assert!(new_request(&["-p", "MQTT", "--keep-alive", "65536"]).is_err());
+    }
+}
