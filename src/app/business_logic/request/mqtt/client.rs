@@ -44,6 +44,8 @@ pub enum MqttEvent {
         code: String,
         session_present: bool,
         properties: Vec<(String, String)>,
+        /// The largest packet the broker accepts, MQTT 5 only
+        max_packet_size: Option<u32>,
     },
     Publish {
         topic: String,
@@ -145,6 +147,7 @@ impl MqttEventLoop {
                         code: format!("{:?}", connack.code),
                         session_present: connack.session_present,
                         properties: vec![],
+                        max_packet_size: None,
                     }),
                     Ok(Event::Incoming(Packet::Publish(publish))) => Ok(MqttEvent::Publish {
                         topic: publish.topic,
@@ -172,6 +175,7 @@ impl MqttEventLoop {
                             None => vec![],
                             Some(properties) => connack_properties_to_vec(properties),
                         },
+                        max_packet_size: connack.properties.as_ref().and_then(|properties| properties.max_packet_size),
                     }),
                     Ok(Event::Incoming(Packet::Publish(publish))) => Ok(MqttEvent::Publish {
                         topic: String::from_utf8_lossy(&publish.topic).to_string(),

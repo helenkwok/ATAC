@@ -125,10 +125,12 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
 
     let mqtt_request = request.get_mqtt_request_mut().unwrap();
     mqtt_request.is_connected = false;
+    mqtt_request.broker_max_packet_size = None;
 
     drop(request);
 
     let request_start = Instant::now();
+    let mut broker_max_packet_size = None;
     let mut connection: Option<(MqttClient, MqttEventLoop)> = None;
 
     let mut response = match MqttClient::new(&prepared_request) {
@@ -149,8 +151,10 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
                     headers: vec![],
                 },
                 Ok(Err(error)) => error_response(error),
-                Ok(Ok((code, session_present, properties))) => {
+                Ok(Ok((code, session_present, properties, max_packet_size))) => {
                     info!("Connected to MQTT broker");
+
+                    broker_max_packet_size = max_packet_size;
 
                     let mut headers = vec![(String::from("session present"), session_present.to_string())];
                     headers.extend(properties);
@@ -204,6 +208,7 @@ pub async fn send_mqtt_request(prepared_request: PreparedMqttRequest, local_requ
     let (commands_sender, commands_receiver) = unbounded_channel();
     mqtt_request.connection = Some(commands_sender);
     mqtt_request.is_connected = true;
+    mqtt_request.broker_max_packet_size = broker_max_packet_size;
 
     drop(request);
 
@@ -231,13 +236,19 @@ pub fn mqtt_publish(mqtt_request: &mut MqttRequest, topic: String, payload: Mqtt
         MqttVersion::V5 => 10,
     };
     let packet_size = payload_bytes.len() + topic.len() + headers_size;
-    if packet_size > mqtt_request.max_packet_size as usize {
+
+    // An MQTT 5 broker can accept less than the request allows, rumqttc would then close the connection
+    let (max_packet_size, limit_owner) = match mqtt_request.broker_max_packet_size {
+        Some(broker_max_packet_size) if broker_max_packet_size < mqtt_request.max_packet_size => (broker_max_packet_size, "the broker's "),
+        _ => (mqtt_request.max_packet_size, "the "),
+    };
+
+    if packet_size > max_packet_size as usize {
         mqtt_request.messages.push(MqttMessage {
             timestamp: Local::now(),
             sender: Sender::You,
             content: MqttMessageContent::Event(format!(
-                "Not published to \"{topic}\": the message is about {packet_size} bytes, over the {} bytes max packet size",
-                mqtt_request.max_packet_size
+                "Not published to \"{topic}\": the message is about {packet_size} bytes, over {limit_owner}{max_packet_size} bytes max packet size"
             )),
         });
         return;
@@ -272,10 +283,10 @@ pub fn mqtt_disconnect(mqtt_request: &mut MqttRequest) {
     }
 }
 
-async fn wait_for_connack(event_loop: &mut MqttEventLoop) -> Result<(String, bool, Vec<(String, String)>), String> {
+async fn wait_for_connack(event_loop: &mut MqttEventLoop) -> Result<(String, bool, Vec<(String, String)>, Option<u32>), String> {
     loop {
-        if let MqttEvent::ConnAck { code, session_present, properties } = event_loop.poll().await? {
-            return Ok((code, session_present, properties));
+        if let MqttEvent::ConnAck { code, session_present, properties, max_packet_size } = event_loop.poll().await? {
+            return Ok((code, session_present, properties, max_packet_size));
         }
     }
 }
@@ -572,6 +583,26 @@ mod tests {
             assert!(receiver.try_recv().is_err(), "{version}");
             assert!(matches!(&mqtt_request.messages.last().unwrap().content, MqttMessageContent::Event(event) if event.starts_with("Not published")));
         }
+    }
+
+    #[test]
+    fn the_smaller_of_the_request_and_broker_limits_applies() {
+        // MQTT 5, one byte topic: a payload of limit - 11 bytes fits exactly
+        let (mut mqtt_request, mut receiver) = connected(MqttVersion::V5, 1000);
+        mqtt_request.broker_max_packet_size = Some(100);
+
+        mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text("x".repeat(89)), QoS::AtMostOnce, false);
+        assert!(matches!(receiver.try_recv(), Ok(MqttCommand::Publish { .. })));
+
+        mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text("x".repeat(90)), QoS::AtMostOnce, false);
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(&mqtt_request.messages.last().unwrap().content, MqttMessageContent::Event(event) if event.contains("the broker's 100 bytes")));
+
+        // A broker allowing more doesn't raise the request's own limit
+        mqtt_request.broker_max_packet_size = Some(100_000);
+        mqtt_publish(&mut mqtt_request, String::from("t"), MqttPayload::Text("x".repeat(990)), QoS::AtMostOnce, false);
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(&mqtt_request.messages.last().unwrap().content, MqttMessageContent::Event(event) if event.contains("the 1000 bytes")));
     }
 
     #[test]

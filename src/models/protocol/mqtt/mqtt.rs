@@ -50,6 +50,10 @@ pub struct MqttRequest {
 
     #[serde(skip)]
     pub is_connected: bool,
+
+    /// The largest packet the broker accepts, sent by MQTT 5 brokers when connecting
+    #[serde(skip)]
+    pub broker_max_packet_size: Option<u32>,
 }
 
 impl Default for MqttRequest {
@@ -67,6 +71,7 @@ impl Default for MqttRequest {
             payload: MqttPayload::default(),
             connection: None,
             is_connected: false,
+            broker_max_packet_size: None,
         }
     }
 }
@@ -222,12 +227,14 @@ mod tests {
         let mut mqtt_request = MqttRequest::default();
         mqtt_request.is_connected = true;
         mqtt_request.connection = Some(tokio::sync::mpsc::unbounded_channel().0);
+        mqtt_request.broker_max_packet_size = Some(100);
 
         let json = serde_json::to_string(&Protocol::MqttRequest(mqtt_request)).unwrap();
 
         assert!(!json.contains("is_connected"));
         assert!(!json.contains("connection"));
         assert!(!json.contains("payload"));
+        assert!(!json.contains("broker_max_packet_size"));
     }
 
     #[test]
