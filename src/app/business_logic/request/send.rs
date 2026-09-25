@@ -31,6 +31,8 @@ use crate::panic_error;
 pub enum PrepareRequestError {
     #[error("(CONSOLE) PRE-REQUEST SCRIPT ERROR")]
     PreRequestScript,
+    #[error("PRE-REQUEST SCRIPT CANNOT CHANGE THE PROTOCOL")]
+    PreRequestScriptChangedProtocol,
     #[error("INVALID URL")]
     InvalidUrl,
     #[error("MQTT URL MUST START WITH mqtt://, mqtts://, tcp:// OR ssl://")]

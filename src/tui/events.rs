@@ -348,8 +348,11 @@ impl App<'_> {
 
         let received_response = *self.received_response.lock();
         if received_response {
-            self.tui_highlight_response_body_and_console();
-            self.tui_refresh_result_scrollbars();
+            // A connection can receive messages or end while no request is selected, e.g. once deleted
+            if self.collections_tree.selected.is_some() {
+                self.tui_highlight_response_body_and_console();
+                self.tui_refresh_result_scrollbars();
+            }
 
             if self.config.should_save_requests_response() {
                 let selection = self.collections_tree.state.selected().to_vec();

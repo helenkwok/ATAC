@@ -30,7 +30,7 @@ impl App<'_> {
 
         // The script could have changed the protocol
         let Ok(mqtt_request) = modified_request.get_mqtt_request() else {
-            return Err(PrepareRequestError::PreRequestScript);
+            return Err(PrepareRequestError::PreRequestScriptChangedProtocol);
         };
 
         /* URL */
@@ -541,7 +541,7 @@ mod tests {
         let mut script = request("mqtt://broker", |_| {});
         script.scripts.pre_request_script = Some(String::from(r#"request.protocol = { "type": "http", "method": "GET", "body": "no_body" };"#));
 
-        assert!(matches!(prepare(&mut script), Err(PrepareRequestError::PreRequestScript)));
+        assert!(matches!(prepare(&mut script), Err(PrepareRequestError::PreRequestScriptChangedProtocol)));
     }
 
     /// Returns the connection receiver to look at what would be sent to the broker
